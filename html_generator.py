@@ -206,11 +206,9 @@ def generate_html(
 <html lang="fa" dir="rtl">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>{safe_name}</title>
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
-
 /* ══ Reset ══ */
 *{{box-sizing:border-box;margin:0;padding:0}}
 
@@ -234,7 +232,7 @@ def generate_html(
 
 /* ══ Base ══ */
 body{{
-  font-family:'Share Tech Mono',monospace,'Segoe UI',sans-serif;
+  font-family:ui-monospace,"SF Mono","Cascadia Mono","DejaVu Sans Mono",Consolas,monospace;
   background:var(--bg);
   color:var(--text);
   min-height:100vh;
@@ -259,20 +257,15 @@ body::before{{
   z-index:9998;
 }}
 
-/* Ambient glow corners */
+/* Ambient glow corner (static — no animation, so it doesn't jitter on scroll) */
 body::after{{
   content:'';
   position:fixed;
   top:-200px;left:-200px;
   width:500px;height:500px;
-  background:radial-gradient(circle,rgba(0,100,200,.12) 0%,transparent 70%);
+  background:radial-gradient(circle,rgba(0,100,200,.10) 0%,transparent 70%);
   pointer-events:none;
   z-index:0;
-  animation:pulse 6s ease-in-out infinite;
-}}
-@keyframes pulse{{
-  0%,100%{{opacity:.5;transform:scale(1)}}
-  50%{{opacity:1;transform:scale(1.08)}}
 }}
 
 a{{color:var(--cyan);text-decoration:none}}
@@ -280,25 +273,11 @@ a{{color:var(--cyan);text-decoration:none}}
 /* ══ Header ══ */
 .channel-header{{
   position:sticky;top:0;z-index:100;
-  background:linear-gradient(180deg,rgba(6,13,26,.98) 0%,rgba(2,5,16,.95) 100%);
+  background:rgba(3,7,16,.97);
   border-bottom:1px solid var(--cyan);
   padding:12px 16px;
   display:flex;align-items:center;gap:14px;
-  backdrop-filter:blur(16px);
   box-shadow:0 0 30px rgba(0,212,255,.08),0 2px 0 var(--cyan);
-}}
-.channel-header::before{{
-  content:'';
-  position:absolute;
-  bottom:-1px;left:0;right:0;
-  height:1px;
-  background:linear-gradient(90deg,transparent,var(--cyan),transparent);
-  animation:scan-h 3s linear infinite;
-}}
-@keyframes scan-h{{
-  0%{{opacity:0;transform:translateX(-100%)}}
-  50%{{opacity:1}}
-  100%{{opacity:0;transform:translateX(100%)}}
 }}
 
 /* Avatar */
@@ -530,13 +509,8 @@ a{{color:var(--cyan);text-decoration:none}}
   .doc-icon{{font-size:18px;width:28px}}
 }}
 
-/* ══ Glitch animation on name ══ */
-@keyframes glitch{{
-  0%,100%{{clip-path:polygon(0 0,100% 0,100% 35%,0 35%);transform:translate(-2px,0)}}
-  20%{{clip-path:polygon(0 65%,100% 65%,100% 80%,0 80%);transform:translate(2px,0)}}
-  40%{{clip-path:polygon(0 45%,100% 45%,100% 55%,0 55%);transform:translate(-1px,0)}}
-  60%{{clip-path:polygon(0 20%,100% 20%,100% 40%,0 40%);transform:translate(1px,0)}}
-  80%{{clip-path:polygon(0 70%,100% 70%,100% 90%,0 90%);transform:translate(-2px,0)}}
+@media (prefers-reduced-motion: reduce){{
+  *{{transition:none!important}}
 }}
 </style>
 </head>
@@ -558,14 +532,6 @@ a{{color:var(--cyan);text-decoration:none}}
 
 <script>
 (function() {{
-  // اسکرول به آخرین پیام
-  window.addEventListener('load', function() {{
-    var msgs = document.querySelectorAll('.message');
-    if (msgs.length) {{
-      msgs[msgs.length - 1].scrollIntoView({{ behavior: 'smooth', block: 'end' }});
-    }}
-  }});
-
   // Lightbox
   var overlay = null;
   document.addEventListener('click', function(e) {{
