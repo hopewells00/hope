@@ -24,7 +24,7 @@ HEADERS = {
 def _get_cookies() -> dict:
     """
     کوکی از env var IMGURL_SESSION می‌خونه (اختیاری).
-    اگه تنظیم نشده باشه، آپلود بدون کوکی انجام میشه (سایت لاگین نیاز نداره).
+    اگه تنظیم نشده باشه، آپلود بدون کوکی انجام میشه.
     """
     session_val = os.environ.get("IMGURL_SESSION", "")
     if session_val:
@@ -66,7 +66,6 @@ def extract_variable(cdn_url: str) -> str:
     مثلاً از  https://cdn.imgurl.ir/uploads/p368285_pic.jpg
     مقدار p368285_pic برگردانده می‌شه.
     """
-    # حذف پسوند و پیشوند ثابت
-    filename = cdn_url.split("/")[-1]  # p368285_pic.jpg
+    filename = cdn_url.split("/")[-1]      # p368285_pic.jpg
     variable = os.path.splitext(filename)[0]  # p368285_pic
     return variable
