@@ -1,6 +1,9 @@
 """
 رمزگذاری AES-256-GCM مطابق با crypt.html
 الفبای فارسی ۴۲ نمادی + PBKDF2-SHA256
+
+رفع باگ: وقتی len(combined) از ۴۱ بیشتر بود IndexError می‌داد
+راه‌حل: طول رو به صورت دو نماد فارسی ذخیره می‌کنیم (BASE^2 = 1764 ظرفیت)
 """
 
 import os
@@ -39,16 +42,23 @@ def _encode_fa(data: bytes) -> str:
     return out
 
 
+def _encode_len(length: int) -> str:
+    """طول را به صورت دو کاراکتر فارسی کُد می‌کند (حداکثر ۱۷۶۳)"""
+    high = (length // BASE) % BASE
+    low  = length % BASE
+    return ALPHABET[high] + ALPHABET[low]
+
+
 def encrypt(plain_text: str, password: str) -> str:
     """
     متن ساده رو با رمز عبور رمزگذاری می‌کنه و خروجی فارسی برمی‌گردونه.
-    مطابق دقیق با crypt.html.
+    فرمت: [2 نماد طول][داده رمزشده]
     """
     iv = os.urandom(12)
     key = _derive_key(password)
     aesgcm = AESGCM(key)
     ciphertext = aesgcm.encrypt(iv, plain_text.encode("utf-8"), None)
 
-    combined = iv + ciphertext          # 12 bytes IV + ciphertext+tag
-    len_symbol = ALPHABET[len(combined)]  # طول کل در اولین کاراکتر
-    return len_symbol + _encode_fa(combined)
+    combined = iv + ciphertext   # 12 bytes IV + ciphertext + 16 bytes tag
+    len_prefix = _encode_len(len(combined))
+    return len_prefix + _encode_fa(combined)

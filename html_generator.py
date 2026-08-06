@@ -1,6 +1,5 @@
 """
-تولید فایل HTML شبیه تلگرام از پیام‌های کانال بله
-رسانه‌ها به صورت فایل جداگانه در پوشه media/ ذخیره می‌شوند
+تولید HTML کانال با تم Cyberpunk + Futuristic
 """
 
 import html
@@ -8,8 +7,6 @@ import os
 from datetime import datetime
 from typing import Optional
 
-
-# ── نقشه MIME ──────────────────────────────────────────────────────────────
 
 MIME_MAP = {
     ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
@@ -37,19 +34,18 @@ MIME_MAP = {
     ".apk": "application/vnd.android.package-archive",
 }
 
-# آیکون‌های فایل بر اساس پسوند
 FILE_ICONS = {
-    ".pdf": "📄",
-    ".doc": "📝", ".docx": "📝",
-    ".xls": "📊", ".xlsx": "📊",
-    ".ppt": "📊", ".pptx": "📊",
-    ".zip": "🗜️", ".rar": "🗜️", ".7z": "🗜️",
-    ".txt": "📃", ".csv": "📃",
-    ".apk": "📱",
-    ".mp3": "🎵", ".m4a": "🎵", ".aac": "🎵", ".flac": "🎵", ".wav": "🎵",
-    ".ogg": "🎵", ".oga": "🎵",
-    ".mp4": "🎬", ".mkv": "🎬", ".avi": "🎬", ".mov": "🎬",
-    ".jpg": "🖼️", ".jpeg": "🖼️", ".png": "🖼️", ".gif": "🖼️", ".webp": "🖼️",
+    ".pdf": "⬡",
+    ".doc": "⬡", ".docx": "⬡",
+    ".xls": "⬡", ".xlsx": "⬡",
+    ".ppt": "⬡", ".pptx": "⬡",
+    ".zip": "◈", ".rar": "◈", ".7z": "◈",
+    ".txt": "⬡", ".csv": "⬡",
+    ".apk": "◉",
+    ".mp3": "♪", ".m4a": "♪", ".aac": "♪", ".flac": "♪", ".wav": "♪",
+    ".ogg": "♪", ".oga": "♪",
+    ".mp4": "▶", ".mkv": "▶", ".avi": "▶", ".mov": "▶",
+    ".jpg": "◈", ".jpeg": "◈", ".png": "◈", ".gif": "◈", ".webp": "◈",
 }
 
 AUDIO_EXTS = {".mp3", ".m4a", ".aac", ".flac", ".wav", ".ogg", ".oga"}
@@ -74,7 +70,6 @@ def _format_date(dt) -> str:
 
 
 def _format_size(size_bytes: int) -> str:
-    """حجم فایل را به فرمت خوانا تبدیل می‌کند."""
     if size_bytes <= 0:
         return ""
     if size_bytes < 1024:
@@ -88,12 +83,10 @@ def _format_size(size_bytes: int) -> str:
 
 
 def _get_relative_media_path(media_path: str) -> str:
-    """مسیر نسبی فایل رسانه را برای HTML برمی‌گرداند."""
     return f"media/{os.path.basename(media_path)}"
 
 
 def _render_media(msg: dict) -> str:
-    """رسانه پیام را به HTML تبدیل می‌کند (با مسیر نسبی)."""
     media_path = msg.get("media_path")
     media_type = msg.get("media_type", "")
     media_name = msg.get("media_name", "")
@@ -106,8 +99,7 @@ def _render_media(msg: dict) -> str:
     rel_path = _get_relative_media_path(media_path)
     esc_path = html.escape(rel_path)
 
-    # عکس
-    if media_type in ("image", "sticker") or (ext in IMAGE_EXTS and media_type not in ("document",)):
+    if media_type in ("image", "sticker") or (ext in IMAGE_EXTS and media_type != "document"):
         return f'''
     <div class="msg-media">
       <a href="{esc_path}" target="_blank" class="media-link">
@@ -115,20 +107,19 @@ def _render_media(msg: dict) -> str:
       </a>
     </div>'''
 
-    # ویدیو / انیمیشن / video_note
-    if media_type in ("video", "animation", "video_note") or ext in VIDEO_EXTS:
+    if media_type in ("video", "animation", "video_note") or (ext in VIDEO_EXTS and media_type != "document"):
         return f'''
     <div class="msg-media">
       <video controls preload="metadata" class="media-video">
         <source src="{esc_path}" type="{_mime(media_path)}">
-        <a href="{esc_path}" class="dl-btn">⬇️ دانلود ویدیو</a>
+        <a href="{esc_path}" class="dl-btn">⬇ دانلود</a>
       </video>
     </div>'''
 
-    # صدا / پیام صوتی
-    if media_type in ("audio", "voice") or ext in AUDIO_EXTS:
-        icon = "🎙️" if media_type == "voice" else "🎵"
-        name_html = f'<span class="audio-name">{icon} {html.escape(media_name or "پیام صوتی")}</span>' if media_name else f'<span class="audio-name">{icon} پیام صوتی</span>'
+    if media_type in ("audio", "voice") or (ext in AUDIO_EXTS and media_type != "document"):
+        icon = "◉" if media_type == "voice" else "♪"
+        name_esc = html.escape(media_name or "audio")
+        name_html = f'<span class="audio-name">{icon} {name_esc}</span>'
         return f'''
     <div class="msg-media audio-wrap">
       {name_html}
@@ -137,11 +128,11 @@ def _render_media(msg: dict) -> str:
       </audio>
     </div>'''
 
-    # اسناد و فایل‌های دیگر
-    file_icon = FILE_ICONS.get(ext, "📎")
+    # هر نوع فایل دیگر — نمایش به عنوان سند قابل دانلود
+    file_icon = FILE_ICONS.get(ext, "◈")
     display_name = html.escape(media_name or os.path.basename(media_path))
     size_str = _format_size(media_size) if media_size else _format_size(os.path.getsize(media_path))
-    mime = _mime(media_path)
+    ext_label = ext.lstrip(".").upper() if ext else "FILE"
 
     return f'''
     <div class="msg-media document-wrap">
@@ -149,15 +140,14 @@ def _render_media(msg: dict) -> str:
         <div class="doc-icon">{file_icon}</div>
         <div class="doc-info">
           <div class="doc-name">{display_name}</div>
-          <div class="doc-meta">{size_str} · {ext.lstrip(".").upper() if ext else "فایل"}</div>
+          <div class="doc-meta">{size_str} · {ext_label}</div>
         </div>
-        <div class="doc-dl">⬇️</div>
+        <div class="doc-dl">⬇</div>
       </a>
     </div>'''
 
 
 def _render_message(msg: dict, index: int) -> str:
-    """یک پیام را به HTML تبدیل می‌کند."""
     media_html = _render_media(msg)
     text_raw = msg.get("text", "") or ""
     text = html.escape(text_raw).replace("\n", "<br>")
@@ -166,7 +156,6 @@ def _render_message(msg: dict, index: int) -> str:
     sender = html.escape(msg.get("sender", "") or "")
     sender_html = f'<div class="msg-sender">{sender}</div>' if sender else ""
 
-    # واکنش‌ها
     reactions_html = ""
     reactions = msg.get("reactions", [])
     if reactions:
@@ -177,13 +166,12 @@ def _render_message(msg: dict, index: int) -> str:
         reactions_html = f'<div class="reactions">{items}</div>'
 
     views = msg.get("views", 0)
-    views_html = f'<span class="views">👁 {views:,}</span>' if views else ""
+    views_html = f'<span class="views">◎ {views:,}</span>' if views else ""
 
-    # فوروارد
     fwd_html = ""
     fwd_from = msg.get("fwd_from")
     if fwd_from:
-        fwd_html = f'<div class="fwd-tag">↪️ Forwarded from <b>{html.escape(str(fwd_from))}</b></div>'
+        fwd_html = f'<div class="fwd-tag">↪ <b>{html.escape(str(fwd_from))}</b></div>'
 
     return f"""
   <div class="message" id="msg-{index}">
@@ -201,15 +189,10 @@ def _render_message(msg: dict, index: int) -> str:
 
 def generate_html(
     channel_name: str,
-    channel_bio: str,
     channel_avatar_path: Optional[str],
     messages: list,
     msg_count: int,
 ) -> str:
-    """
-    لیستی از پیام‌ها را می‌گیرد و یک HTML کامل برمی‌گرداند.
-    رسانه‌ها با مسیر نسبی media/ ارجاع داده می‌شوند.
-    """
     if channel_avatar_path and os.path.exists(channel_avatar_path):
         avatar_html = '<img class="ch-avatar" src="media/avatar.jpg" alt="">'
     else:
@@ -218,7 +201,6 @@ def generate_html(
 
     msgs_html = "".join(_render_message(m, i) for i, m in enumerate(messages))
     safe_name = html.escape(channel_name or "")
-    safe_bio = html.escape(channel_bio or "").replace("\n", "<br>")
 
     return f"""<!DOCTYPE html>
 <html lang="fa" dir="rtl">
@@ -227,236 +209,334 @@ def generate_html(
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{safe_name}</title>
 <style>
-/* ═══════════════ Reset & Base ═══════════════ */
+@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
+
+/* ══ Reset ══ */
 *{{box-sizing:border-box;margin:0;padding:0}}
+
+/* ══ Cyberpunk Variables ══ */
+:root{{
+  --bg:       #020510;
+  --bg2:      #060d1a;
+  --bg3:      #0a1628;
+  --cyan:     #00d4ff;
+  --blue:     #0066cc;
+  --blue2:    #0044aa;
+  --accent:   #0088ee;
+  --glow:     rgba(0,212,255,.18);
+  --glow2:    rgba(0,136,238,.25);
+  --text:     #c8d8e8;
+  --text-dim: #4a6a8a;
+  --border:   rgba(0,212,255,.12);
+  --border2:  rgba(0,212,255,.25);
+  --scan:     rgba(0,212,255,.025);
+}}
+
+/* ══ Base ══ */
 body{{
-  font-family:-apple-system,'Segoe UI',Tahoma,Arial,sans-serif;
-  background:#0e1621;
-  color:#d1d5db;
+  font-family:'Share Tech Mono',monospace,'Segoe UI',sans-serif;
+  background:var(--bg);
+  color:var(--text);
   min-height:100vh;
   direction:rtl;
+  position:relative;
+  overflow-x:hidden;
 }}
-a{{color:inherit;text-decoration:none}}
 
-/* ═══════════════ Header ═══════════════ */
+/* CRT scanlines overlay */
+body::before{{
+  content:'';
+  position:fixed;
+  inset:0;
+  background:repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    var(--scan) 2px,
+    var(--scan) 4px
+  );
+  pointer-events:none;
+  z-index:9998;
+}}
+
+/* Ambient glow corners */
+body::after{{
+  content:'';
+  position:fixed;
+  top:-200px;left:-200px;
+  width:500px;height:500px;
+  background:radial-gradient(circle,rgba(0,100,200,.12) 0%,transparent 70%);
+  pointer-events:none;
+  z-index:0;
+  animation:pulse 6s ease-in-out infinite;
+}}
+@keyframes pulse{{
+  0%,100%{{opacity:.5;transform:scale(1)}}
+  50%{{opacity:1;transform:scale(1.08)}}
+}}
+
+a{{color:var(--cyan);text-decoration:none}}
+
+/* ══ Header ══ */
 .channel-header{{
   position:sticky;top:0;z-index:100;
-  background:linear-gradient(180deg,#1c2b3a 0%,#17212b 100%);
-  border-bottom:1px solid rgba(47,159,224,0.15);
+  background:linear-gradient(180deg,rgba(6,13,26,.98) 0%,rgba(2,5,16,.95) 100%);
+  border-bottom:1px solid var(--cyan);
   padding:12px 16px;
-  display:flex;align-items:center;gap:12px;
-  backdrop-filter:blur(12px);
-  -webkit-backdrop-filter:blur(12px);
-  box-shadow:0 2px 12px rgba(0,0,0,.4);
+  display:flex;align-items:center;gap:14px;
+  backdrop-filter:blur(16px);
+  box-shadow:0 0 30px rgba(0,212,255,.08),0 2px 0 var(--cyan);
 }}
+.channel-header::before{{
+  content:'';
+  position:absolute;
+  bottom:-1px;left:0;right:0;
+  height:1px;
+  background:linear-gradient(90deg,transparent,var(--cyan),transparent);
+  animation:scan-h 3s linear infinite;
+}}
+@keyframes scan-h{{
+  0%{{opacity:0;transform:translateX(-100%)}}
+  50%{{opacity:1}}
+  100%{{opacity:0;transform:translateX(100%)}}
+}}
+
+/* Avatar */
 .ch-avatar{{
-  width:48px;height:48px;border-radius:50%;
+  width:52px;height:52px;border-radius:4px;
   object-fit:cover;
-  border:2px solid #2f9fe0;
+  border:1px solid var(--cyan);
   flex-shrink:0;
-  box-shadow:0 0 0 3px rgba(47,159,224,.18);
+  box-shadow:0 0 12px var(--glow),inset 0 0 6px rgba(0,212,255,.06);
+  image-rendering:crisp-edges;
+  clip-path:polygon(6px 0%,100% 0%,100% calc(100% - 6px),calc(100% - 6px) 100%,0% 100%,0% 6px);
 }}
 .ch-avatar-placeholder{{
-  width:48px;height:48px;border-radius:50%;
-  background:linear-gradient(135deg,#2f9fe0,#1565c0);
+  width:52px;height:52px;
+  border:1px solid var(--cyan);
+  background:linear-gradient(135deg,var(--bg3),var(--blue2));
   display:flex;align-items:center;justify-content:center;
-  font-size:20px;font-weight:700;color:#fff;
+  font-size:22px;font-weight:700;color:var(--cyan);
   flex-shrink:0;
-  box-shadow:0 0 0 3px rgba(47,159,224,.18);
+  box-shadow:0 0 12px var(--glow);
+  clip-path:polygon(6px 0%,100% 0%,100% calc(100% - 6px),calc(100% - 6px) 100%,0% 100%,0% 6px);
 }}
 .ch-info{{flex:1;min-width:0}}
 .ch-name{{
-  font-size:17px;font-weight:700;color:#fff;
+  font-size:15px;font-weight:700;
+  color:var(--cyan);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-  letter-spacing:.01em;
-}}
-.ch-bio{{
-  font-size:13px;color:#8ea0b4;
-  margin-top:2px;
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  letter-spacing:.08em;
+  text-shadow:0 0 10px rgba(0,212,255,.5);
+  text-transform:uppercase;
 }}
 .msg-count-badge{{
-  font-size:11px;color:#5fb8e8;
-  background:rgba(47,159,224,.12);
-  border:1px solid rgba(47,159,224,.2);
-  padding:4px 10px;border-radius:20px;
-  white-space:nowrap;font-weight:600;
+  font-size:10px;
+  color:var(--cyan);
+  background:rgba(0,212,255,.06);
+  border:1px solid var(--border2);
+  padding:4px 10px;
+  clip-path:polygon(4px 0%,100% 0%,calc(100% - 4px) 100%,0% 100%);
+  white-space:nowrap;
+  letter-spacing:.12em;
+  font-weight:700;
+  text-shadow:0 0 8px rgba(0,212,255,.4);
 }}
 
-/* ═══════════════ Feed ═══════════════ */
+/* ══ Feed ══ */
 .feed{{
-  max-width:700px;margin:0 auto;
-  padding:12px 8px 80px;
-  display:flex;flex-direction:column;gap:3px;
+  max-width:720px;margin:0 auto;
+  padding:14px 10px 90px;
+  display:flex;flex-direction:column;gap:4px;
+  position:relative;z-index:1;
 }}
 
-/* ═══════════════ Message ═══════════════ */
+/* ══ Message ══ */
 .message{{
-  background:linear-gradient(135deg,#1e2e3e 0%,#192330 100%);
-  border-radius:12px;
+  background:linear-gradient(135deg,rgba(10,22,40,.92) 0%,rgba(6,13,26,.95) 100%);
+  border:1px solid var(--border);
+  border-right:2px solid rgba(0,212,255,.2);
+  border-radius:2px;
   padding:10px 14px 8px;
   position:relative;
-  border:1px solid rgba(47,159,224,.06);
-  transition:background .15s ease,border-color .15s ease;
+  transition:border-color .2s,box-shadow .2s;
+  clip-path:polygon(0 0,calc(100% - 8px) 0,100% 8px,100% 100%,8px 100%,0 calc(100% - 8px));
+}}
+.message::before{{
+  content:'';
+  position:absolute;
+  top:0;right:0;
+  width:8px;height:8px;
+  background:var(--cyan);
+  clip-path:polygon(0 0,100% 100%,0 100%);
+  opacity:.15;
 }}
 .message:hover{{
-  background:linear-gradient(135deg,#233447 0%,#1c2838 100%);
-  border-color:rgba(47,159,224,.14);
+  border-color:var(--border2);
+  box-shadow:0 0 16px rgba(0,212,255,.08),inset 0 0 20px rgba(0,212,255,.02);
 }}
 
 /* فوروارد */
 .fwd-tag{{
-  font-size:12.5px;color:#5fb8e8;
-  border-right:3px solid #2f9fe0;
+  font-size:11.5px;color:var(--accent);
+  border-right:2px solid var(--cyan);
   padding:2px 8px 2px 0;
   margin-bottom:7px;
-  opacity:.9;
+  letter-spacing:.04em;
+  opacity:.85;
 }}
 
 /* فرستنده */
 .msg-sender{{
-  font-size:13px;font-weight:600;
-  color:#5fb8e8;margin-bottom:4px;
+  font-size:12px;font-weight:700;
+  color:var(--cyan);margin-bottom:5px;
+  letter-spacing:.06em;
+  text-shadow:0 0 6px rgba(0,212,255,.3);
 }}
 
-/* ═══════════════ Media ═══════════════ */
-.msg-media{{margin:8px 0 4px}}
-
-/* عکس */
+/* ══ Media ══ */
+.msg-media{{margin:8px 0 5px}}
 .media-link{{display:block}}
 .media-img{{
-  max-width:100%;max-height:500px;
-  border-radius:10px;display:block;
+  max-width:100%;max-height:480px;
+  border-radius:2px;display:block;
   object-fit:contain;
-  background:#111c28;
+  background:#030810;
   cursor:zoom-in;
-  transition:opacity .2s;
+  transition:opacity .2s,filter .2s;
+  border:1px solid var(--border);
 }}
-.media-img:hover{{opacity:.92}}
+.media-img:hover{{opacity:.88;filter:brightness(1.05)}}
 
-/* ویدیو */
 .media-video{{
-  width:100%;max-height:500px;
-  border-radius:10px;
-  background:#000;
-  display:block;
+  width:100%;max-height:480px;
+  border-radius:2px;
+  background:#000;display:block;
+  border:1px solid var(--border);
 }}
 
-/* صدا */
 .audio-wrap{{
-  background:rgba(47,159,224,.07);
-  border-radius:10px;
-  padding:10px 12px;
+  background:rgba(0,100,200,.06);
+  border:1px solid var(--border);
+  border-radius:2px;padding:10px 12px;
 }}
 .audio-name{{
-  display:block;
-  font-size:13px;color:#8ea0b4;
-  margin-bottom:6px;
+  display:block;font-size:12px;
+  color:var(--text-dim);margin-bottom:7px;
+  letter-spacing:.04em;
 }}
-.media-audio{{
-  width:100%;
-  accent-color:#2f9fe0;
-}}
+.media-audio{{width:100%;accent-color:var(--cyan)}}
 
-/* سند / فایل */
-.document-wrap{{
-  background:rgba(47,159,224,.05);
-  border-radius:10px;
-  padding:0;
-}}
+/* Сонда */
+.document-wrap{{border-radius:2px;padding:0}}
 .doc-card{{
   display:flex;align-items:center;gap:12px;
   padding:10px 14px;
-  border-radius:10px;
-  border:1px solid rgba(47,159,224,.12);
-  background:rgba(30,46,62,.6);
-  transition:background .15s,border-color .15s;
+  border:1px solid var(--border);
+  background:rgba(0,68,170,.06);
+  transition:background .15s,border-color .15s,box-shadow .15s;
   cursor:pointer;
+  clip-path:polygon(0 0,calc(100% - 6px) 0,100% 6px,100% 100%,6px 100%,0 calc(100% - 6px));
 }}
 .doc-card:hover{{
-  background:rgba(47,159,224,.1);
-  border-color:rgba(47,159,224,.25);
+  background:rgba(0,136,238,.1);
+  border-color:var(--border2);
+  box-shadow:0 0 12px rgba(0,212,255,.08);
 }}
 .doc-icon{{
-  font-size:28px;flex-shrink:0;
-  width:40px;text-align:center;
+  font-size:22px;flex-shrink:0;width:36px;
+  text-align:center;color:var(--cyan);
+  text-shadow:0 0 8px rgba(0,212,255,.4);
 }}
 .doc-info{{flex:1;min-width:0;overflow:hidden}}
 .doc-name{{
-  font-size:14px;font-weight:600;color:#c9d4df;
+  font-size:13px;font-weight:700;
+  color:var(--text);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  letter-spacing:.02em;
 }}
-.doc-meta{{
-  font-size:12px;color:#5e8db3;margin-top:2px;
-}}
-.doc-dl{{
-  font-size:18px;flex-shrink:0;
-  color:#5fb8e8;opacity:.7;
-}}
-.doc-card:hover .doc-dl{{opacity:1}}
+.doc-meta{{font-size:11px;color:var(--text-dim);margin-top:2px;letter-spacing:.04em}}
+.doc-dl{{font-size:16px;flex-shrink:0;color:var(--cyan);opacity:.6}}
+.doc-card:hover .doc-dl{{opacity:1;text-shadow:0 0 6px rgba(0,212,255,.5)}}
 
-/* ═══════════════ Text ═══════════════ */
+/* ══ Text ══ */
 .msg-text{{
-  font-size:15px;line-height:1.65;
-  color:#d1d5db;word-break:break-word;
-  margin-top:2px;
+  font-size:14px;line-height:1.72;
+  color:var(--text);
+  word-break:break-word;margin-top:3px;
+  font-family:-apple-system,'Segoe UI',Tahoma,sans-serif;
 }}
 
-/* ═══════════════ Footer ═══════════════ */
+/* ══ Footer ══ */
 .msg-footer{{
-  display:flex;align-items:center;gap:8px;
-  margin-top:7px;
-  flex-wrap:wrap;
+  display:flex;align-items:center;gap:10px;
+  margin-top:8px;flex-wrap:wrap;
 }}
-.msg-date{{font-size:11.5px;color:#4e6070}}
-.views{{font-size:11.5px;color:#4e6070}}
+.msg-date{{font-size:10.5px;color:var(--text-dim);letter-spacing:.06em}}
+.views{{font-size:10.5px;color:var(--text-dim);letter-spacing:.04em}}
 
-/* ═══════════════ Reactions ═══════════════ */
+/* ══ Reactions ══ */
 .reactions{{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}}
 .react-item{{
-  background:rgba(47,159,224,.1);
-  border:1px solid rgba(47,159,224,.2);
-  border-radius:20px;padding:3px 9px;
-  font-size:13.5px;display:flex;align-items:center;gap:4px;
+  background:rgba(0,136,238,.08);
+  border:1px solid var(--border);
+  clip-path:polygon(4px 0%,100% 0%,calc(100% - 4px) 100%,0% 100%);
+  padding:3px 9px;font-size:13px;
+  display:flex;align-items:center;gap:4px;
   cursor:default;
-  transition:background .15s;
+  transition:background .15s,border-color .15s;
 }}
-.react-item:hover{{background:rgba(47,159,224,.18)}}
-.react-count{{font-size:12px;color:#8ea0b4;font-weight:500}}
+.react-item:hover{{
+  background:rgba(0,136,238,.15);
+  border-color:var(--border2);
+}}
+.react-count{{font-size:11px;color:var(--text-dim);font-weight:700}}
 
-/* ═══════════════ Scrollbar ═══════════════ */
-::-webkit-scrollbar{{width:5px}}
-::-webkit-scrollbar-track{{background:#0e1621}}
-::-webkit-scrollbar-thumb{{background:#2b3a4a;border-radius:3px}}
-::-webkit-scrollbar-thumb:hover{{background:#3a5068}}
-
-/* ═══════════════ Date Divider ═══════════════ */
+/* ══ Date Divider ══ */
 .date-divider{{
   display:flex;align-items:center;gap:10px;
-  margin:14px 0 6px;
-  opacity:.6;
+  margin:16px 0 8px;
 }}
 .date-divider::before,.date-divider::after{{
   content:'';flex:1;
-  height:1px;background:rgba(47,159,224,.15);
+  height:1px;
+  background:linear-gradient(90deg,transparent,var(--cyan),transparent);
+  opacity:.15;
 }}
 .date-divider span{{
-  font-size:11px;color:#5e7a90;
-  white-space:nowrap;
-  padding:3px 10px;
-  background:rgba(47,159,224,.06);
-  border-radius:12px;
-  border:1px solid rgba(47,159,224,.1);
+  font-size:10px;color:var(--text-dim);
+  white-space:nowrap;padding:3px 10px;
+  border:1px solid var(--border);
+  background:rgba(0,212,255,.04);
+  letter-spacing:.08em;
+  text-transform:uppercase;
 }}
 
-/* ═══════════════ Responsive ═══════════════ */
+/* ══ Scrollbar ══ */
+::-webkit-scrollbar{{width:4px}}
+::-webkit-scrollbar-track{{background:var(--bg)}}
+::-webkit-scrollbar-thumb{{
+  background:var(--blue2);border-radius:0;
+  box-shadow:0 0 6px var(--glow);
+}}
+::-webkit-scrollbar-thumb:hover{{background:var(--accent)}}
+
+/* ══ Responsive ══ */
 @media(max-width:520px){{
-  .ch-name{{font-size:15px}}
-  .msg-text{{font-size:14px}}
-  .media-img,.media-video{{border-radius:8px}}
-  .doc-icon{{font-size:22px;width:32px}}
+  .ch-name{{font-size:13px}}
+  .msg-text{{font-size:13px}}
   .channel-header{{padding:10px 12px}}
-  .feed{{padding:8px 4px 80px}}
+  .feed{{padding:8px 6px 80px}}
+  .doc-icon{{font-size:18px;width:28px}}
+}}
+
+/* ══ Glitch animation on name ══ */
+@keyframes glitch{{
+  0%,100%{{clip-path:polygon(0 0,100% 0,100% 35%,0 35%);transform:translate(-2px,0)}}
+  20%{{clip-path:polygon(0 65%,100% 65%,100% 80%,0 80%);transform:translate(2px,0)}}
+  40%{{clip-path:polygon(0 45%,100% 45%,100% 55%,0 55%);transform:translate(-1px,0)}}
+  60%{{clip-path:polygon(0 20%,100% 20%,100% 40%,0 40%);transform:translate(1px,0)}}
+  80%{{clip-path:polygon(0 70%,100% 70%,100% 90%,0 90%);transform:translate(-2px,0)}}
 }}
 </style>
 </head>
@@ -467,12 +547,11 @@ a{{color:inherit;text-decoration:none}}
   {avatar_html}
   <div class="ch-info">
     <div class="ch-name">{safe_name}</div>
-    {"<div class='ch-bio'>" + safe_bio + "</div>" if safe_bio else ""}
   </div>
-  <div class="msg-count-badge">{msg_count} پیام</div>
+  <div class="msg-count-badge">MSG // {msg_count}</div>
 </div>
 
-<!-- Messages Feed -->
+<!-- Feed -->
 <div class="feed">
 {msgs_html}
 </div>
@@ -487,7 +566,7 @@ a{{color:inherit;text-decoration:none}}
     }}
   }});
 
-  // Lightbox ساده برای عکس‌ها
+  // Lightbox
   var overlay = null;
   document.addEventListener('click', function(e) {{
     var img = e.target.closest('.media-img');
@@ -495,13 +574,24 @@ a{{color:inherit;text-decoration:none}}
       e.preventDefault();
       if (!overlay) {{
         overlay = document.createElement('div');
-        overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.9);z-index:9999;display:flex;align-items:center;justify-content:center;cursor:zoom-out;';
-        overlay.addEventListener('click', function() {{ overlay.remove(); overlay = null; }});
+        overlay.style.cssText = [
+          'position:fixed;inset:0;',
+          'background:rgba(0,0,0,.92);',
+          'z-index:9999;',
+          'display:flex;align-items:center;justify-content:center;',
+          'cursor:zoom-out;',
+          'border:1px solid rgba(0,212,255,.15);',
+          'backdrop-filter:blur(8px);'
+        ].join('');
+        overlay.addEventListener('click', function() {{
+          overlay.remove();
+          overlay = null;
+        }});
       }}
       overlay.innerHTML = '';
       var bigImg = document.createElement('img');
       bigImg.src = img.src;
-      bigImg.style.cssText = 'max-width:95vw;max-height:95vh;object-fit:contain;border-radius:8px;';
+      bigImg.style.cssText = 'max-width:96vw;max-height:96vh;object-fit:contain;border:1px solid rgba(0,212,255,.2);box-shadow:0 0 40px rgba(0,212,255,.15);';
       overlay.appendChild(bigImg);
       document.body.appendChild(overlay);
     }}

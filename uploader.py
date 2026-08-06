@@ -1,9 +1,10 @@
 """
-آپلود فایل به imgurl.ir و استخراج لینک
+آپلود فایل به imgurl.ir و استخراج لینک — با ۳ بار تلاش مجدد
 """
 
 import os
 import re
+import time
 import logging
 import requests
 
@@ -22,21 +23,13 @@ HEADERS = {
 
 
 def _get_cookies() -> dict:
-    """
-    کوکی از env var IMGURL_SESSION می‌خونه (اختیاری).
-    اگه تنظیم نشده باشه، آپلود بدون کوکی انجام میشه.
-    """
     session_val = os.environ.get("IMGURL_SESSION", "")
     if session_val:
         return {"mmh_user_session": session_val}
     return {}
 
 
-def upload_file(file_path: str) -> str:
-    """
-    فایل رو آپلود می‌کنه و URL مستقیم CDN رو برمی‌گردونه.
-    مثلاً: https://cdn.imgurl.ir/uploads/p368285_pic.jpg
-    """
+def _upload_once(file_path: str) -> str:
     cookies = _get_cookies()
     file_name = os.path.basename(file_path)
     with open(file_path, "rb") as f:
@@ -48,24 +41,37 @@ def upload_file(file_path: str) -> str:
             cookies=cookies,
             files=files,
             data=data,
-            timeout=60,
+            timeout=120,
         )
     resp.raise_for_status()
     html = resp.text
-    logger.debug("imgurl response: %s", html[:500])
     match = re.search(r'https://cdn\.imgurl\.ir/uploads/([^"\s]+)', html)
     if not match:
-        raise RuntimeError(f"لینک در پاسخ سرور پیدا نشد. پاسخ:\n{html[:800]}")
-    full_url = match.group(0)
-    return full_url
+        raise RuntimeError(f"لینک پیدا نشد. پاسخ:\n{html[:800]}")
+    return match.group(0)
+
+
+def upload_file(file_path: str, max_attempts: int = 3) -> str:
+    """فایل رو آپلود می‌کنه — حداکثر ۳ بار تلاش"""
+    last_err = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            url = _upload_once(file_path)
+            logger.info("upload ok (attempt %d): %s", attempt, url)
+            return url
+        except Exception as e:
+            last_err = e
+            logger.warning("upload attempt %d/%d failed: %s", attempt, max_attempts, e)
+            if attempt < max_attempts:
+                time.sleep(3 * attempt)
+    raise last_err
 
 
 def extract_variable(cdn_url: str) -> str:
     """
     قسمت متغیر URL رو استخراج می‌کنه.
-    مثلاً از  https://cdn.imgurl.ir/uploads/p368285_pic.jpg
-    مقدار p368285_pic برگردانده می‌شه.
+    مثال: https://cdn.imgurl.ir/uploads/p368285_pic.jpg → p368285_pic
     """
-    filename = cdn_url.split("/")[-1]      # p368285_pic.jpg
-    variable = os.path.splitext(filename)[0]  # p368285_pic
+    filename = cdn_url.split("/")[-1]
+    variable = os.path.splitext(filename)[0]
     return variable
