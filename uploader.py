@@ -23,15 +23,13 @@ HEADERS = {
 
 def _get_cookies() -> dict:
     """
-    کوکی از env var IMGURL_SESSION می‌خونه.
-    مقدار IMGURL_SESSION همون مقدار mmh_user_session هست.
+    کوکی از env var IMGURL_SESSION می‌خونه (اختیاری).
+    اگه تنظیم نشده باشه، آپلود بدون کوکی انجام میشه (سایت لاگین نیاز نداره).
     """
     session_val = os.environ.get("IMGURL_SESSION", "")
-    if not session_val:
-        raise RuntimeError("متغیر محیطی IMGURL_SESSION تنظیم نشده.")
-    return {
-        "mmh_user_session": session_val,
-    }
+    if session_val:
+        return {"mmh_user_session": session_val}
+    return {}
 
 
 def upload_file(file_path: str) -> str:
