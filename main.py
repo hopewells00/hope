@@ -4,7 +4,6 @@
 
 import asyncio
 import logging
-import math
 import os
 import shutil
 import tempfile
@@ -30,14 +29,12 @@ from html_generator import generate_html
 from sms_sender import send_sms
 from uploader import extract_variable, upload_file
 
-# ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
 
-# ── Config از Environment Variables ──────────────────────────────────────────
 BOT_TOKEN      = os.environ["BOT_TOKEN"]
 ADMIN_ID       = int(os.environ["ADMIN_ID"])
 API_ID         = int(os.environ["API_ID"])
@@ -49,14 +46,14 @@ CRYPT_PASS     = os.environ["CRYPT_PASS"]
 BALE_BASE_URL      = "https://tapi.bale.ai/bot"
 BALE_BASE_FILE_URL = "https://tapi.bale.ai/file/bot"
 
-SPLIT_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
+SPLIT_SIZE_BYTES  = 10 * 1024 * 1024   # 10 MB
 AUTO_DELETE_HOURS = 4
 
 userbot: Optional[TelegramClient] = None
 
+
 # ── تمیزکاری فایل‌های قدیمی هنگام اجرا ──────────────────────────────────────
 def cleanup_old_temp_files():
-    """پاک کردن فایل‌های موقت قدیمی از tmp"""
     try:
         tmp = tempfile.gettempdir()
         now = time.time()
@@ -169,7 +166,7 @@ async def _download_media_once(channel_id: int, limit: int, dest_dir: str) -> li
                         ext = ".jpg"
                         media_type = "image"
                     else:
-                        # هر نوع فایل دیگری — پسوند از نام فایل یا .bin
+                        # هر نوع فایل — پسوند از نام فایل یا .bin
                         if media_name:
                             raw_ext = os.path.splitext(media_name)[1]
                             ext = raw_ext if raw_ext else ".bin"
@@ -228,16 +225,14 @@ def create_protected_zip(html_content: str, media_dir: str, zip_path: str) -> No
 
 
 def split_file(file_path: str, part_size: int = SPLIT_SIZE_BYTES) -> list[str]:
-    """فایل را به چند قطعه تقسیم می‌کند"""
     parts = []
-    base = file_path + ".part"
     with open(file_path, "rb") as f:
         idx = 1
         while True:
             chunk = f.read(part_size)
             if not chunk:
                 break
-            part_path = f"{base}{idx}"
+            part_path = f"{file_path}.part{idx}"
             with open(part_path, "wb") as pf:
                 pf.write(chunk)
             parts.append(part_path)
@@ -246,7 +241,6 @@ def split_file(file_path: str, part_size: int = SPLIT_SIZE_BYTES) -> list[str]:
 
 
 async def send_zip_parts_to_bale(context, zip_path: str):
-    """ZIP را به قطعات ۱۰ مگابایتی تقسیم کرده و ارسال می‌کند"""
     parts = split_file(zip_path)
     total = len(parts)
     for i, part_path in enumerate(parts, 1):
@@ -279,8 +273,7 @@ def upload_with_retry(file_path: str, max_attempts: int = 3) -> str:
             last_err = e
             logger.warning("upload attempt %d failed: %s", attempt, e)
             if attempt < max_attempts:
-                import time as _t
-                _t.sleep(2 * attempt)
+                time.sleep(2 * attempt)
     raise last_err
 
 
@@ -288,7 +281,7 @@ def upload_with_retry(file_path: str, max_attempts: int = 3) -> str:
 #  پردازش کامل کانال
 # ═══════════════════════════════════════════════════════════════════════════
 
-TOTAL_STEPS = 7  # تعداد مراحل برای محاسبه درصد
+TOTAL_STEPS = 7
 
 
 async def process_channel(
@@ -298,23 +291,18 @@ async def process_channel(
     msg_count_override: Optional[int] = None,
     max_zip_mb_override: Optional[int] = None,
 ) -> str:
-    """
-    پردازش کانال با نمایش درصد پیشرفت
-    برمی‌گرداند: متن رمزگذاری‌شده
-    """
     work_dir = tempfile.mkdtemp(prefix="tgexport_")
     media_dir = os.path.join(work_dir, "media")
     os.makedirs(media_dir, exist_ok=True)
 
-    # زمان‌بندی حذف خودکار فایل‌های موقت
+    # حذف خودکار بعد از ۴ ساعت
     asyncio.get_event_loop().call_later(
         AUTO_DELETE_HOURS * 3600,
         lambda: shutil.rmtree(work_dir, ignore_errors=True)
     )
 
-    # تنظیمات
-    msg_count = msg_count_override or context.bot_data.get("msg_count", 30)
-    max_zip_mb = max_zip_mb_override or context.bot_data.get("max_zip_mb", 50)
+    msg_count = msg_count_override if msg_count_override is not None else context.bot_data.get("msg_count", 30)
+    max_zip_mb = max_zip_mb_override if max_zip_mb_override is not None else context.bot_data.get("max_zip_mb", 50)
 
     async def set_progress(step: int, total: int = TOTAL_STEPS):
         pct = int(step / total * 100)
@@ -332,7 +320,7 @@ async def process_channel(
 
         await set_progress(1)
 
-        # دانلود عکس پروفایل
+        # دانلود عکس پروفایل با ۳ تلاش
         avatar_path = None
         for attempt in range(1, 4):
             try:
@@ -340,7 +328,7 @@ async def process_channel(
                 break
             except Exception as e:
                 if attempt == 3:
-                    logger.warning("avatar failed after 3 attempts: %s", e)
+                    logger.warning("avatar failed: %s", e)
                 else:
                     await asyncio.sleep(2)
 
@@ -348,8 +336,11 @@ async def process_channel(
 
         zip_path = os.path.join(work_dir, "export.zip")
 
-        while msg_count >= 5:
-            messages = await download_media_for_messages(channel_id, msg_count, media_dir)
+        # ── حلقه کاهش حجم ──────────────────────────────────────────────
+        # شروع از تعداد درخواستی، کاهش یک‌به‌یک تا پیدا شدن حجم مجاز
+        current_count = msg_count
+        while current_count >= 1:
+            messages = await download_media_for_messages(channel_id, current_count, media_dir)
 
             await set_progress(3)
 
@@ -370,15 +361,16 @@ async def process_channel(
             if size_mb <= max_zip_mb:
                 break
             else:
-                msg_count -= 2
+                current_count -= 1
                 shutil.rmtree(media_dir)
                 os.makedirs(media_dir, exist_ok=True)
         else:
-            raise RuntimeError("حجم از حد مجاز بیشتر است.")
+            # حتی با ۱ پیام هم از حد بیشتر است — ادامه با همان یک پیام
+            pass
 
         await set_progress(5)
 
-        # آپلود به imgurl
+        # تغییر پسوند و آپلود
         jpg_path = os.path.join(work_dir, "export.jpg")
         with open(zip_path, "rb") as f_in, open(jpg_path, "wb") as f_out:
             f_out.write(f_in.read())
@@ -388,24 +380,24 @@ async def process_channel(
         try:
             cdn_url = upload_with_retry(jpg_path)
         except Exception as e:
-            logger.error("upload failed: %s", e)
+            logger.error("upload failed after retries: %s", e)
             upload_failed = True
 
         await set_progress(6)
 
         if upload_failed:
-            # ذخیره zip_path برای ارسال مستقیم
+            # ذخیره مسیر zip برای ارسال مستقیم
             context.bot_data["pending_zip"] = zip_path
             context.bot_data["pending_zip_dir"] = work_dir
             keyboard = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("✅ بله", callback_data="send_zip:yes"),
-                    InlineKeyboardButton("❌ خیر", callback_data="send_zip:no"),
+                    InlineKeyboardButton("✅", callback_data="send_zip:yes"),
+                    InlineKeyboardButton("❌", callback_data="send_zip:no"),
                 ]
             ])
             await context.bot.send_message(
                 chat_id=ADMIN_ID,
-                text="آیا فایل مستقیم ارسال شود؟",
+                text="ارسال مستقیم؟",
                 reply_markup=keyboard,
             )
             return "__UPLOAD_FAILED__"
@@ -414,7 +406,7 @@ async def process_channel(
 
         await set_progress(7)
 
-        # ارسال پیامک
+        # پیامک
         try:
             send_sms(encrypted)
         except Exception as e:
@@ -429,17 +421,15 @@ async def process_channel(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  سیستم نظارت پیام‌های ربات و حذف خودکار
+#  ردیابی و حذف خودکار پیام‌ها
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _track_message(context, msg_id: int):
-    """ثبت آیدی پیام برای حذف خودکار بعدی"""
     tracked = context.bot_data.setdefault("tracked_msgs", [])
     tracked.append(msg_id)
 
 
 async def auto_delete_messages(context: ContextTypes.DEFAULT_TYPE):
-    """هر ساعت تمام پیام‌های ردیابی‌شده را حذف می‌کند"""
     tracked = context.bot_data.pop("tracked_msgs", [])
     for msg_id in tracked:
         try:
@@ -449,11 +439,10 @@ async def auto_delete_messages(context: ContextTypes.DEFAULT_TYPE):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  دستور /w — واچ خودکار
+#  دستور /w — واچ خودکار ۲۴ ساعته
 # ═══════════════════════════════════════════════════════════════════════════
 
 async def auto_watch_job(context: ContextTypes.DEFAULT_TYPE):
-    """هر ۲۴ ساعت ۵ پیام اخیر تمام کانال‌ها را export می‌کند"""
     if not context.bot_data.get("watch_mode"):
         return
 
@@ -506,7 +495,7 @@ async def auto_watch_job(context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _get_allowed(context) -> set:
-    allowed = context.bot_data.setdefault("allowed_users", {ADMIN_ID})
+    allowed = context.bot_data.setdefault("allowed_users", set())
     allowed.add(ADMIN_ID)
     return allowed
 
@@ -514,9 +503,7 @@ def _get_allowed(context) -> set:
 def allowed_only(func):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
-        if not user:
-            return
-        if user.id not in _get_allowed(context):
+        if not user or user.id not in _get_allowed(context):
             return
         return await func(update, context)
     return wrapper
@@ -544,7 +531,7 @@ def _channel_keyboard(index: int, total: int) -> InlineKeyboardMarkup:
         nav.append(InlineKeyboardButton("▶️", callback_data=f"nav:{index + 1}"))
     if nav:
         buttons.append(nav)
-    buttons.append([InlineKeyboardButton("✅ تأیید", callback_data=f"confirm:{index}")])
+    buttons.append([InlineKeyboardButton("✅", callback_data=f"confirm:{index}")])
     return InlineKeyboardMarkup(buttons)
 
 
@@ -554,7 +541,6 @@ async def _send_channel_card(
     index: int,
     old_msg_id: Optional[int] = None,
 ) -> int:
-    """ارسال کارت کانال؛ قبلی را حذف می‌کند. آیدی پیام جدید را برمی‌گرداند."""
     channels: list = context.bot_data.get("channels", [])
     if not channels:
         return 0
@@ -612,14 +598,14 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await loading.delete()
         card_id = await _send_channel_card(context, ADMIN_ID, 0)
         context.bot_data["current_card_msg_id"] = card_id
+        _track_message(context, card_id)
     except Exception as e:
         logger.exception("start error")
-        await loading.edit_text(f"✕ {e}")
+        await loading.edit_text(f"✕")
 
 
 @admin_only
 async def cmd_add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """دستور /Add USERID"""
     _track_message(context, update.message.message_id)
     args = context.args
     if not args:
@@ -638,7 +624,6 @@ async def cmd_add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def cmd_watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """دستور مخفی /w"""
     _track_message(context, update.message.message_id)
     context.bot_data["watch_mode"] = True
     m = await update.message.reply_text("✓")
@@ -647,7 +632,6 @@ async def cmd_watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def cmd_watch_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """دستور مخفی /woff"""
     _track_message(context, update.message.message_id)
     context.bot_data["watch_mode"] = False
     m = await update.message.reply_text("✕")
@@ -656,7 +640,7 @@ async def cmd_watch_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def cmd_set_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """دستور /setlimit N — تغییر حداکثر حجم ZIP (مگابایت)"""
+    """تنظیم حداکثر حجم ZIP به مگابایت — /setlimit N"""
     _track_message(context, update.message.message_id)
     args = context.args
     if not args:
@@ -665,6 +649,8 @@ async def cmd_set_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     try:
         val = int(args[0])
+        if val < 1:
+            raise ValueError
         context.bot_data["max_zip_mb"] = val
         m = await update.message.reply_text("✓")
         _track_message(context, m.message_id)
@@ -675,7 +661,6 @@ async def cmd_set_limit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """پردازش ورودی متنی کاربر (برای تعداد پیام)"""
     _track_message(context, update.message.message_id)
     state = context.user_data.get("state")
 
@@ -684,29 +669,23 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             count = int(update.message.text.strip())
             if count < 1:
                 raise ValueError
-            context.user_data["msg_count_input"] = count
             context.user_data["state"] = None
 
-            # ادامه پردازش
             pending = context.user_data.get("pending_channel")
             if not pending:
                 return
 
-            # حذف پیام کارت
-            card_id = context.bot_data.get("current_card_msg_id")
-            if card_id:
-                try:
-                    await context.bot.delete_message(chat_id=ADMIN_ID, message_id=card_id)
-                except Exception:
-                    pass
-                context.bot_data["current_card_msg_id"] = None
-
-            progress_msg = await context.bot.send_message(chat_id=ADMIN_ID, text="[░░░░░░░░░░░░░░░░░░░░] 0%")
+            progress_msg = await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text="[░░░░░░░░░░░░░░░░░░░░] 0%"
+            )
             _track_message(context, progress_msg.message_id)
 
             try:
                 encrypted = await process_channel(
-                    pending, progress_msg, context,
+                    pending,
+                    progress_msg,
+                    context,
                     msg_count_override=count,
                 )
                 if encrypted != "__UPLOAD_FAILED__":
@@ -746,6 +725,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         new_id = await _send_channel_card(context, ADMIN_ID, new_index)
         context.bot_data["current_card_msg_id"] = new_id
+        _track_message(context, new_id)
 
     elif data.startswith("confirm:"):
         index = int(data.split(":")[1])
@@ -756,7 +736,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         channel = channels[index]
         context.user_data["pending_channel"] = channel
 
-        # حذف کارت
+        # حذف کامل کارت
         try:
             await context.bot.delete_message(
                 chat_id=ADMIN_ID, message_id=query.message.message_id
@@ -826,10 +806,9 @@ async def main():
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    # Job: حذف خودکار پیام‌ها هر ۱ ساعت
+    # حذف خودکار هر ۱ ساعت
     app.job_queue.run_repeating(auto_delete_messages, interval=3600, first=3600)
-
-    # Job: واچ خودکار هر ۲۴ ساعت
+    # واچ خودکار هر ۲۴ ساعت
     app.job_queue.run_repeating(auto_watch_job, interval=86400, first=86400)
 
     await app.initialize()

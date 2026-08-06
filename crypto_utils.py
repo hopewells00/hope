@@ -1,9 +1,7 @@
 """
-رمزگذاری AES-256-GCM مطابق با crypt.html
-الفبای فارسی ۴۲ نمادی + PBKDF2-SHA256
-
-رفع باگ: وقتی len(combined) از ۴۱ بیشتر بود IndexError می‌داد
-راه‌حل: طول رو به صورت دو نماد فارسی ذخیره می‌کنیم (BASE^2 = 1764 ظرفیت)
+رمزگذاری AES-256-GCM + PBKDF2-SHA256
+رفع باگ: ALPHABET[len(combined)] وقتی len >= 42 بود IndexError می‌داد
+راه‌حل: طول با ۲ کاراکتر فارسی کدگذاری می‌شه (ظرفیت ۱۷۶۳)
 """
 
 import os
@@ -43,7 +41,7 @@ def _encode_fa(data: bytes) -> str:
 
 
 def _encode_len(length: int) -> str:
-    """طول را به صورت دو کاراکتر فارسی کُد می‌کند (حداکثر ۱۷۶۳)"""
+    """طول را با ۲ کاراکتر فارسی کد می‌کند (حداکثر ۴۲²-۱ = ۱۷۶۳)"""
     high = (length // BASE) % BASE
     low  = length % BASE
     return ALPHABET[high] + ALPHABET[low]
@@ -51,14 +49,12 @@ def _encode_len(length: int) -> str:
 
 def encrypt(plain_text: str, password: str) -> str:
     """
-    متن ساده رو با رمز عبور رمزگذاری می‌کنه و خروجی فارسی برمی‌گردونه.
-    فرمت: [2 نماد طول][داده رمزشده]
+    رمزگذاری و خروجی فارسی.
+    فرمت: [۲ نماد طول][داده رمزشده]
     """
     iv = os.urandom(12)
     key = _derive_key(password)
     aesgcm = AESGCM(key)
     ciphertext = aesgcm.encrypt(iv, plain_text.encode("utf-8"), None)
-
-    combined = iv + ciphertext   # 12 bytes IV + ciphertext + 16 bytes tag
-    len_prefix = _encode_len(len(combined))
-    return len_prefix + _encode_fa(combined)
+    combined = iv + ciphertext
+    return _encode_len(len(combined)) + _encode_fa(combined)

@@ -1,5 +1,5 @@
 """
-آپلود فایل به imgurl.ir و استخراج لینک — با ۳ بار تلاش مجدد
+آپلود فایل به imgurl.ir — با ۳ بار تلاش مجدد
 """
 
 import os
@@ -44,15 +44,14 @@ def _upload_once(file_path: str) -> str:
             timeout=120,
         )
     resp.raise_for_status()
-    html = resp.text
-    match = re.search(r'https://cdn\.imgurl\.ir/uploads/([^"\s]+)', html)
+    html_text = resp.text
+    match = re.search(r'https://cdn\.imgurl\.ir/uploads/([^"\s]+)', html_text)
     if not match:
-        raise RuntimeError(f"لینک پیدا نشد. پاسخ:\n{html[:800]}")
+        raise RuntimeError(f"لینک پیدا نشد. پاسخ:\n{html_text[:800]}")
     return match.group(0)
 
 
 def upload_file(file_path: str, max_attempts: int = 3) -> str:
-    """فایل رو آپلود می‌کنه — حداکثر ۳ بار تلاش"""
     last_err = None
     for attempt in range(1, max_attempts + 1):
         try:
@@ -68,10 +67,5 @@ def upload_file(file_path: str, max_attempts: int = 3) -> str:
 
 
 def extract_variable(cdn_url: str) -> str:
-    """
-    قسمت متغیر URL رو استخراج می‌کنه.
-    مثال: https://cdn.imgurl.ir/uploads/p368285_pic.jpg → p368285_pic
-    """
     filename = cdn_url.split("/")[-1]
-    variable = os.path.splitext(filename)[0]
-    return variable
+    return os.path.splitext(filename)[0]

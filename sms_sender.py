@@ -1,5 +1,5 @@
 """
-ارسال پیامک از طریق sms.ir — با ۳ بار تلاش مجدد
+ارسال پیامک از sms.ir — با ۳ بار تلاش مجدد
 """
 
 import os
@@ -36,7 +36,7 @@ def send_sms(text: str, max_attempts: int = 3) -> tuple:
                 data = r.json()
             except Exception:
                 data = {"raw": r.text}
-            logger.info("SMS attempt %d result: %s %s", attempt, r.status_code, data)
+            logger.info("SMS attempt %d: %s %s", attempt, r.status_code, data)
             if r.status_code == 200:
                 return r.status_code, data
             last_err = Exception(f"HTTP {r.status_code}: {data}")
