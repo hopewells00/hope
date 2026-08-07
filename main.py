@@ -20,8 +20,10 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from functools import wraps
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
+from zoneinfo import ZoneInfo
 
 import pyzipper
 from telethon import TelegramClient
@@ -49,13 +51,6 @@ from html_generator import generate_html
 from sms_sender import send_sms
 from uploader import extract_variable, upload_file
 
-
-logging.basicConfig(
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    level=logging.INFO,
-)
-logger = logging.getLogger(__name__)
-
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 ADMIN_ID = int(os.environ["ADMIN_ID"])
 API_ID = int(os.environ["API_ID"])
@@ -67,6 +62,35 @@ CRYPT_PASS = os.environ["CRYPT_PASS"]
 BALE_BASE_URL = "https://tapi.bale.ai/bot"
 BALE_BASE_FILE_URL = "https://tapi.bale.ai/file/bot"
 BASE_DIR = Path(__file__).resolve().parent
+LOG_MAX_BYTES = max(256 * 1024, int(os.environ.get("LOG_MAX_BYTES", str(10 * 1024 * 1024))))
+LOG_BACKUP_COUNT = max(1, int(os.environ.get("LOG_BACKUP_COUNT", "5")))
+
+
+def _configure_logging() -> None:
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    handlers: list[logging.Handler] = [
+        RotatingFileHandler(
+            BASE_DIR / "bot.log",
+            maxBytes=LOG_MAX_BYTES,
+            backupCount=LOG_BACKUP_COUNT,
+            encoding="utf-8",
+        ),
+        RotatingFileHandler(
+            BASE_DIR / "bot-error.log",
+            maxBytes=LOG_MAX_BYTES,
+            backupCount=LOG_BACKUP_COUNT,
+            encoding="utf-8",
+        ),
+    ]
+    handlers[0].setLevel(logging.INFO)
+    handlers[1].setLevel(logging.ERROR)
+    for handler in handlers:
+        handler.setFormatter(formatter)
+    logging.basicConfig(level=logging.INFO, handlers=handlers, force=True)
+
+
+_configure_logging()
+logger = logging.getLogger(__name__)
 _configured_data_dir = Path(os.environ.get("DATA_DIR", "data")).expanduser()
 DATA_DIR = (
     _configured_data_dir
@@ -75,15 +99,36 @@ DATA_DIR = (
 )
 STATE_PATH = DATA_DIR / "state.json"
 AVATAR_DIR = DATA_DIR / "avatars"
+STATE_BACKUP_DIR = Path(
+    os.environ.get("STATE_BACKUP_DIR", str(DATA_DIR / "backups"))
+).expanduser()
 
 SPLIT_SIZE_BYTES = 10 * 1024 * 1024
 AUTO_DELETE_HOURS = 4
-WATCH_INTERVAL_SECONDS = 12 * 60 * 60
+DEFAULT_WATCH_INTERVAL_SECONDS = 12 * 60 * 60
 WATCH_MESSAGE_COUNT = 20
 WATCH_MAX_FILE_BYTES = 30 * 1024 * 1024
 MEDIA_CONCURRENCY = max(2, int(os.environ.get("MEDIA_CONCURRENCY", "8")))
 DEFAULT_MESSAGE_COUNT = 30
 DEFAULT_MAX_ZIP_MB = 50
+STATE_BACKUP_KEEP = max(2, int(os.environ.get("STATE_BACKUP_KEEP", "14")))
+STATE_BACKUP_INTERVAL_SECONDS = max(
+    300, int(os.environ.get("STATE_BACKUP_INTERVAL_SECONDS", str(6 * 3600)))
+)
+
+
+def _optional_int_env(name: str) -> Optional[int]:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        return None
+    try:
+        return max(1, int(value))
+    except ValueError:
+        logger.warning("invalid integer environment variable %s=%r", name, value)
+        return None
+
+
+DEFAULT_MAX_MEDIA_BYTES = _optional_int_env("MAX_MEDIA_BYTES") or WATCH_MAX_FILE_BYTES
 
 userbot: Optional[TelegramClient] = None
 
@@ -91,21 +136,34 @@ userbot: Optional[TelegramClient] = None
 def _ensure_data_dirs() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     AVATAR_DIR.mkdir(parents=True, exist_ok=True)
+    STATE_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _load_state() -> dict[str, Any]:
     _ensure_data_dirs()
-    if not STATE_PATH.exists():
-        return {"channels": {}, "watch_mode": False}
-    try:
-        with STATE_PATH.open("r", encoding="utf-8") as fh:
-            value = json.load(fh)
+    candidates = [STATE_PATH] + sorted(
+        STATE_BACKUP_DIR.glob("state-*.json"), reverse=True
+    )
+    for candidate in candidates:
+        try:
+            with candidate.open("r", encoding="utf-8") as fh:
+                value = json.load(fh)
             if isinstance(value, dict):
                 value.setdefault("channels", {})
+                value.setdefault("watch_mode", False)
+                value.setdefault("allowed_users", [])
+                value.setdefault(
+                    "watch_interval_seconds", DEFAULT_WATCH_INTERVAL_SECONDS
+                )
                 return value
-    except (OSError, ValueError) as exc:
-        logger.warning("state file is invalid; resetting the cache: %s", exc)
-    return {"channels": {}, "watch_mode": False}
+        except (OSError, ValueError) as exc:
+            logger.warning("could not load state candidate %s: %s", candidate, exc)
+    return {
+        "channels": {},
+        "watch_mode": False,
+        "allowed_users": [],
+        "watch_interval_seconds": DEFAULT_WATCH_INTERVAL_SECONDS,
+    }
 
 
 def _save_state(state: dict[str, Any]) -> None:
@@ -114,6 +172,25 @@ def _save_state(state: dict[str, Any]) -> None:
     with temp_path.open("w", encoding="utf-8") as fh:
         json.dump(state, fh, ensure_ascii=False, indent=2)
     temp_path.replace(STATE_PATH)
+
+
+def backup_state() -> None:
+    """Write a rolling snapshot; set STATE_BACKUP_DIR to a persistent mount."""
+    _ensure_data_dirs()
+    if not STATE_PATH.exists():
+        return
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    target = STATE_BACKUP_DIR / f"state-{stamp}.json"
+    temp_path = target.with_suffix(".tmp")
+    try:
+        shutil.copy2(STATE_PATH, temp_path)
+        temp_path.replace(target)
+        backups = sorted(STATE_BACKUP_DIR.glob("state-*.json"), key=lambda p: p.stat().st_mtime)
+        for old in backups[:-STATE_BACKUP_KEEP]:
+            with contextlib.suppress(OSError):
+                old.unlink()
+    except OSError as exc:
+        logger.warning("state backup failed: %s", exc)
 
 
 def _photo_signature(entity: Channel) -> str:
@@ -171,6 +248,11 @@ async def refresh_channels() -> list[dict[str, Any]]:
         channel = _channel_from_entity(dialog.entity)
         await _cache_avatar(dialog.entity, channel, state)
         fresh[str(channel["id"])] = channel
+    old_ids = set(state.get("channels", {})) - set(fresh)
+    for old_id in old_ids:
+        for avatar in AVATAR_DIR.glob(f"{old_id}.*"):
+            with contextlib.suppress(OSError):
+                avatar.unlink()
     state["channels"] = fresh
     _save_state(state)
     return list(fresh.values())
@@ -439,6 +521,7 @@ class ExportQueue:
     async def cancel_all(self) -> None:
         for job in self.jobs.values():
             job.cancelled = True
+            await _show_cancelled_progress(job)
         if self.active_task and not self.active_task.done():
             self.active_task.cancel()
         while not self.queue.empty():
@@ -483,9 +566,30 @@ class ExportQueue:
                 self.active = None
                 self.queue.task_done()
 
+    async def cancel_job(self, job_id: str) -> bool:
+        job = self.jobs.get(job_id)
+        if not job:
+            return False
+        job.cancelled = True
+        await _show_cancelled_progress(job)
+        if self.active is job and self.active_task and not self.active_task.done():
+            self.active_task.cancel()
+        return True
+
 
 def _queue(application: Application) -> ExportQueue:
     return application.bot_data["export_queue"]
+
+
+async def _show_cancelled_progress(job: ExportJob) -> None:
+    if not job.progress_message_id:
+        return
+    with contextlib.suppress(Exception):
+        await job.context.bot.edit_message_text(
+            chat_id=ADMIN_ID,
+            message_id=job.progress_message_id,
+            text=f"⏹ درخواست {job.label} لغو شد.\nشناسهٔ درخواست: {job.job_id}",
+        )
 
 
 async def _set_progress(job: ExportJob, percent: int, detail: str = "") -> None:
@@ -505,9 +609,19 @@ async def _set_progress(job: ExportJob, percent: int, detail: str = "") -> None:
     text = f"[{bar}] {job.progress}%{remaining}"
     if detail:
         text += f"\n{detail}"
+    markup = (
+        InlineKeyboardMarkup(
+            [[InlineKeyboardButton("⏹ لغو export", callback_data=f"cancel:{job.job_id}")]]
+        )
+        if percent < 100
+        else None
+    )
     with contextlib.suppress(Exception):
         await job.context.bot.edit_message_text(
-            chat_id=ADMIN_ID, message_id=job.progress_message_id, text=text
+            chat_id=ADMIN_ID,
+            message_id=job.progress_message_id,
+            text=text,
+            reply_markup=markup,
         )
 
 
@@ -607,7 +721,7 @@ async def _request_approval(job: ExportJob, encrypted: str) -> str:
     approval = {"event": event, "value": None, "job_id": job.job_id}
     job.context.application.bot_data["pending_approval"] = approval
     try:
-        await job.context.bot.send_message(
+        approval_message = await job.context.bot.send_message(
             chat_id=ADMIN_ID,
             text=(
                 f"✅ خروجی «{job.label}» آماده شد.\n"
@@ -617,47 +731,59 @@ async def _request_approval(job: ExportJob, encrypted: str) -> str:
                 "اگر فقط ارسال در بله کافی است، پاسخ دهید: n"
             ),
         )
-        await job.context.bot.send_message(chat_id=ADMIN_ID, text=encrypted)
+        _track_message(job.context, approval_message.message_id)
+        encrypted_message = await job.context.bot.send_message(
+            chat_id=ADMIN_ID, text=encrypted
+        )
+        _track_message(job.context, encrypted_message.message_id)
         await event.wait()
     finally:
         if job.context.application.bot_data.get("pending_approval") is approval:
             job.context.application.bot_data.pop("pending_approval", None)
     value = approval["value"]
     if value == "y":
-        await job.context.bot.send_message(
+        confirmation = await job.context.bot.send_message(
             chat_id=ADMIN_ID,
             text="✅ تأیید دریافت شد؛ پیامک در حال ارسال است.",
         )
+        _track_message(job.context, confirmation.message_id)
         try:
             sms_status, _ = await asyncio.to_thread(send_sms, encrypted)
             if sms_status == 200:
-                await job.context.bot.send_message(
+                sms_message = await job.context.bot.send_message(
                     chat_id=ADMIN_ID,
                     text="✅ پیامک با موفقیت ارسال شد. متن رمز‌شده دوباره در بله ارسال می‌شود.",
                 )
+                _track_message(job.context, sms_message.message_id)
             else:
-                await job.context.bot.send_message(
+                sms_message = await job.context.bot.send_message(
                     chat_id=ADMIN_ID,
                     text=(
                         "⚠️ ارسال پیامک موفق نبود؛ متن رمز‌شده همچنان در بله "
                         "قابل استفاده است."
                     ),
                 )
+                _track_message(job.context, sms_message.message_id)
         except Exception as exc:
             logger.warning("SMS failed after approval: %s", exc)
-            await job.context.bot.send_message(
+            sms_message = await job.context.bot.send_message(
                 chat_id=ADMIN_ID,
                 text=(
                     "⚠️ ارسال پیامک موفق نبود؛ متن رمز‌شده همچنان در بله "
                     "قابل استفاده است."
                 ),
             )
-        await job.context.bot.send_message(chat_id=ADMIN_ID, text=encrypted)
+            _track_message(job.context, sms_message.message_id)
+        repeated_encrypted = await job.context.bot.send_message(
+            chat_id=ADMIN_ID, text=encrypted
+        )
+        _track_message(job.context, repeated_encrypted.message_id)
     elif value == "n":
-        await job.context.bot.send_message(
+        response = await job.context.bot.send_message(
             chat_id=ADMIN_ID,
             text="✅ پاسخ n ثبت شد؛ پیامک ارسال نمی‌شود.",
         )
+        _track_message(job.context, response.message_id)
     return value or "n"
 
 
@@ -695,10 +821,11 @@ async def run_export_job(job: ExportJob) -> None:
             else:
                 final_detail = "✅ export کامل شد؛ فقط در بله ارسال شد."
         else:
-            await job.context.bot.send_message(
+            notice = await job.context.bot.send_message(
                 chat_id=ADMIN_ID,
                 text="✅ واچ خودکار کامل شد؛ متن رمز‌شده در پیام بعدی ارسال می‌شود.",
             )
+            _track_message(job.context, notice.message_id)
             message = await job.context.bot.send_message(
                 chat_id=ADMIN_ID,
                 text=encrypted,
@@ -723,18 +850,32 @@ def cleanup_old_temp_files() -> None:
 
 
 def _track_message(context: ContextTypes.DEFAULT_TYPE, message_id: int) -> None:
-    context.application.bot_data.setdefault("tracked_msgs", []).append(message_id)
+    tracked = context.application.bot_data.setdefault("tracked_msgs", [])
+    tracked.append({"message_id": message_id, "created_at": time.time()})
 
 
 async def auto_delete_messages(context: ContextTypes.DEFAULT_TYPE) -> None:
-    ids = context.application.bot_data.pop("tracked_msgs", [])
-    for message_id in ids:
+    tracked = context.application.bot_data.setdefault("tracked_msgs", [])
+    cutoff = time.time() - AUTO_DELETE_HOURS * 3600
+    keep: list[dict[str, Any]] = []
+    for item in tracked:
+        if isinstance(item, int):
+            item = {"message_id": item, "created_at": 0}
+        message_id = int(item.get("message_id", 0))
+        created_at = float(item.get("created_at", 0))
+        if created_at > cutoff:
+            keep.append(item)
+            continue
         with contextlib.suppress(Exception):
             await context.bot.delete_message(chat_id=ADMIN_ID, message_id=message_id)
+    context.application.bot_data["tracked_msgs"] = keep
 
 
 def _get_allowed(context: ContextTypes.DEFAULT_TYPE) -> set[int]:
     allowed = context.application.bot_data.setdefault("allowed_users", set())
+    if not allowed:
+        state_users = _load_state().get("allowed_users", [])
+        allowed.update(int(user_id) for user_id in state_users if str(user_id).isdigit())
     allowed.add(ADMIN_ID)
     return allowed
 
@@ -742,55 +883,60 @@ def _get_allowed(context: ContextTypes.DEFAULT_TYPE) -> set[int]:
 def admin_only(func: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Any:
-        if not update.effective_user or update.effective_user.id != ADMIN_ID:
+        if (
+            not update.effective_user
+            or update.effective_user.id not in _get_allowed(context)
+        ):
             return None
         return await func(update, context)
 
     return wrapper
 
 
-def _channel_keyboard(index: int, total: int) -> InlineKeyboardMarkup:
-    navigation: list[InlineKeyboardButton] = []
-    if index > 0:
-        navigation.append(InlineKeyboardButton("◀", callback_data=f"nav:{index - 1}"))
-    if index < total - 1:
-        navigation.append(InlineKeyboardButton("▶", callback_data=f"nav:{index + 1}"))
-    rows = [navigation] if navigation else []
-    rows.append([InlineKeyboardButton("✓", callback_data=f"confirm:{index}")])
+def _channel_keyboard(
+    channels: list[dict[str, Any]], selected_ids: set[int]
+) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(
+                f"{'☑' if int(channel['id']) in selected_ids else '☐'} {channel['title'][:38]}",
+                callback_data=f"toggle:{channel['id']}",
+            )
+        ]
+        for channel in channels
+    ]
+    rows.append(
+        [
+            InlineKeyboardButton("انتخاب همه", callback_data="select:all"),
+            InlineKeyboardButton("پاک‌کردن انتخاب", callback_data="select:none"),
+        ]
+    )
+    rows.append(
+        [InlineKeyboardButton(f"ادامه با {len(selected_ids)} کانال", callback_data="confirm:selected")]
+    )
     return InlineKeyboardMarkup(rows)
 
 
-async def _send_channel_card(
-    context: ContextTypes.DEFAULT_TYPE, index: int, old_message_id: Optional[int] = None
+async def _send_channel_selector(
+    context: ContextTypes.DEFAULT_TYPE, old_message_id: Optional[int] = None
 ) -> Optional[int]:
     channels = await get_channels()
     if not channels:
         return None
+    selected_ids = set(context.user_data.get("selected_channel_ids", set()))
     if old_message_id:
         with contextlib.suppress(Exception):
             await context.bot.delete_message(chat_id=ADMIN_ID, message_id=old_message_id)
-    channel = channels[index]
-    caption = f"<b>{channel['title']}</b>"
-    if channel.get("username"):
-        caption += f"\n@{channel['username']}"
-    caption += f"\n\n{index + 1} / {len(channels)}"
-    avatar = Path(channel.get("avatar_path", ""))
-    if avatar.exists():
-        with avatar.open("rb") as fh:
-            message = await context.bot.send_photo(
-                chat_id=ADMIN_ID,
-                photo=fh,
-                caption=caption,
-                parse_mode="HTML",
-                reply_markup=_channel_keyboard(index, len(channels)),
-            )
-    else:
-        message = await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=caption,
-            parse_mode="HTML",
-            reply_markup=_channel_keyboard(index, len(channels)),
-        )
+    caption = (
+        "کانال‌های موردنظر را انتخاب کنید:\n"
+        f"☑ انتخاب‌شده: {len(selected_ids)} از {len(channels)}\n"
+        "بعد روی «ادامه» بزنید."
+    )
+    message = await context.bot.send_message(
+        chat_id=ADMIN_ID,
+        text=caption,
+        reply_markup=_channel_keyboard(channels, selected_ids),
+    )
     return message.message_id
 
 
@@ -799,7 +945,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message:
         _track_message(context, update.message.message_id)
         intro = await update.message.reply_text(
-            "سلام. یک کانال را انتخاب کنید و دکمهٔ ✓ را بزنید؛ "
+            "سلام. یک یا چند کانال را با دکمه‌ها انتخاب کنید؛ "
             "بعد تعداد پیام‌های موردنظر را ارسال کنید."
         )
         _track_message(context, intro.message_id)
@@ -813,7 +959,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         _track_message(context, message.message_id)
         return
-    message_id = await _send_channel_card(context, 0)
+    context.user_data["selected_channel_ids"] = set()
+    message_id = await _send_channel_selector(context)
     if message_id:
         context.application.bot_data["current_card_msg_id"] = message_id
         _track_message(context, message_id)
@@ -835,6 +982,57 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 @admin_only
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = await update.message.reply_text(
+        "راهنمای دستورها\n\n"
+        "/start — انتخاب هم‌زمان چند کانال با دکمه\n"
+        "/list — نمایش فهرست کانال‌های ذخیره‌شده\n"
+        "/refresh — همگام‌سازی کانال‌ها و پاک‌کردن آواتارهای قدیمی\n"
+        "/export all --count 30 — خروجی از همهٔ کانال‌ها\n"
+        "/export نام‌کانال --days 3 --type photos — خروجی محدودشده\n"
+        "  --media-max 30M — سقف رسانه برای همین export\n"
+        "/setlimit 100 — سقف حجم ZIP برحسب مگابایت\n"
+        "/w 6h — فعال‌سازی واچ با فاصلهٔ دلخواه (مثلاً 30m، 2h، 1d)\n"
+        "/woff — توقف واچ و لغو exportهای در صف\n"
+        "/status — وضعیت واچ، صف و کانال‌های فعلی\n"
+        "/Add 12345 — افزودن کاربر مجاز\n"
+        "/y یا /n — تأیید یا رد ارسال پیامک",
+    )
+    _track_message(context, message.message_id)
+
+
+@admin_only
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    state = _load_state()
+    channels = await get_channels()
+    queue = _queue(context.application)
+    active = queue.active
+    interval = int(
+        context.application.bot_data.get(
+            "watch_interval_seconds",
+            state.get("watch_interval_seconds", DEFAULT_WATCH_INTERVAL_SECONDS),
+        )
+    )
+    status = "روشن" if context.application.bot_data.get("watch_mode") else "خاموش"
+    active_text = (
+        f"{active.label} ({active.job_id}) · {active.progress}%"
+        if active
+        else "ندارد"
+    )
+    message = await update.message.reply_text(
+        "وضعیت فعلی\n\n"
+        f"واچ: {status}\n"
+        f"فاصلهٔ واچ: {_format_duration(interval)}\n"
+        f"کانال‌های فعلی: {len(channels)}\n"
+        f"پردازش فعال: {active_text}\n"
+        f"در صف انتظار: {queue.queue.qsize()}\n"
+        f"سقف ZIP: {context.application.bot_data.get('max_zip_mb', DEFAULT_MAX_ZIP_MB)} MB\n"
+        f"سقف رسانه: {_format_bytes(DEFAULT_MAX_MEDIA_BYTES) if DEFAULT_MAX_MEDIA_BYTES else 'بدون سقف'}",
+    )
+    _track_message(context, message.message_id)
+
+
+@admin_only
 async def cmd_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     channels = await refresh_channels()
     message = await update.message.reply_text(
@@ -849,6 +1047,7 @@ def _parse_export_args(args: list[str], channels: list[dict[str, Any]]) -> tuple
         "media_filter": "all",
         "count": DEFAULT_MESSAGE_COUNT,
         "max_zip_mb": DEFAULT_MAX_ZIP_MB,
+        "max_media_bytes": DEFAULT_MAX_MEDIA_BYTES,
     }
     selectors: list[str] = []
     index = 0
@@ -875,6 +1074,8 @@ def _parse_export_args(args: list[str], channels: list[dict[str, Any]]) -> tuple
                 options["count"] = max(1, int(value))
             elif key in {"max", "limit"}:
                 options["max_zip_mb"] = max(1, int(value))
+            elif key in {"media-max", "max-media", "max-media-bytes"}:
+                options["max_media_bytes"] = _parse_size(value)
         else:
             selectors.append(token.lstrip("@").casefold())
         index += 1
@@ -891,6 +1092,47 @@ def _parse_export_args(args: list[str], channels: list[dict[str, Any]]) -> tuple
     return selected, options
 
 
+def _parse_size(value: str) -> int:
+    """Parse a human-friendly byte limit such as 30M, 1.5GB, or 3145728."""
+    normalized = value.strip().upper().replace(" ", "")
+    units = (("GB", 1024**3), ("G", 1024**3), ("MB", 1024**2), ("M", 1024**2),
+             ("KB", 1024), ("K", 1024), ("B", 1))
+    for suffix, multiplier in units:
+        if normalized.endswith(suffix):
+            return max(1, int(float(normalized[:-len(suffix)]) * multiplier))
+    return max(1, int(normalized))
+
+
+def _format_bytes(value: Optional[int]) -> str:
+    if not value:
+        return "بدون سقف"
+    if value >= 1024**3:
+        return f"{value / 1024**3:.1f} GB"
+    if value >= 1024**2:
+        return f"{value / 1024**2:.0f} MB"
+    return f"{value / 1024:.0f} KB"
+
+
+def _parse_duration(value: str) -> int:
+    normalized = value.strip().lower().replace(" ", "")
+    if normalized.isdigit():
+        return max(60, int(normalized) * 3600)
+    units = {"m": 60, "min": 60, "h": 3600, "d": 86400}
+    for suffix, multiplier in units.items():
+        if normalized.endswith(suffix):
+            amount = float(normalized[: -len(suffix)])
+            return max(60, int(amount * multiplier))
+    raise ValueError("invalid duration")
+
+
+def _format_duration(seconds: int) -> str:
+    if seconds % 86400 == 0:
+        return f"{seconds // 86400} روز"
+    if seconds % 3600 == 0:
+        return f"{seconds // 3600} ساعت"
+    return f"{seconds // 60} دقیقه"
+
+
 async def _enqueue_job(
     context: ContextTypes.DEFAULT_TYPE,
     channels: list[dict[str, Any]],
@@ -904,13 +1146,14 @@ async def _enqueue_job(
     max_media_bytes: Optional[int] = None,
 ) -> None:
     if not channels:
-        await context.bot.send_message(
+        message = await context.bot.send_message(
             chat_id=ADMIN_ID,
             text=(
                 "❌ هیچ کانالی برای export پیدا نشد.\n"
                 "نام کانال را بررسی کنید یا ابتدا /refresh را بزنید."
             ),
         )
+        _track_message(context, message.message_id)
         return
     job = ExportJob(
         context=context,
@@ -988,21 +1231,46 @@ async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 @admin_only
 async def cmd_add_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
+        message = await update.message.reply_text("قالب درست: /Add شناسهٔ عددی کاربر")
+        _track_message(context, message.message_id)
         return
-    with contextlib.suppress(ValueError):
-        _get_allowed(context).add(int(context.args[0]))
+    try:
+        user_id = int(context.args[0])
+    except ValueError:
+        message = await update.message.reply_text("شناسهٔ کاربر باید عددی باشد.")
+        _track_message(context, message.message_id)
+        return
+    allowed = _get_allowed(context)
+    allowed.add(user_id)
+    state = _load_state()
+    state["allowed_users"] = sorted(allowed - {ADMIN_ID})
+    _save_state(state)
+    message = await update.message.reply_text(
+        f"✅ کاربر {user_id} اضافه شد و از این پس به دستورهای بات دسترسی دارد."
+    )
+    _track_message(context, message.message_id)
 
 
 @admin_only
 async def cmd_set_limit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
+        message = await update.message.reply_text("قالب درست: /setlimit 100")
+        _track_message(context, message.message_id)
         return
-    with contextlib.suppress(ValueError):
+    try:
         value = max(1, int(context.args[0]))
-        context.application.bot_data["max_zip_mb"] = value
-        state = _load_state()
-        state["max_zip_mb"] = value
-        _save_state(state)
+    except ValueError:
+        message = await update.message.reply_text("حجم باید یک عدد مثبت برحسب مگابایت باشد.")
+        _track_message(context, message.message_id)
+        return
+    context.application.bot_data["max_zip_mb"] = value
+    state = _load_state()
+    state["max_zip_mb"] = value
+    _save_state(state)
+    message = await update.message.reply_text(
+        f"✅ سقف حجم ZIP روی {value} مگابایت تنظیم شد."
+    )
+    _track_message(context, message.message_id)
 
 
 async def _manual_watch(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1023,15 +1291,28 @@ async def _manual_watch(context: ContextTypes.DEFAULT_TYPE) -> None:
 @admin_only
 async def cmd_watch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     state = _load_state()
+    try:
+        interval = _parse_duration(context.args[0]) if context.args else int(
+            state.get("watch_interval_seconds", DEFAULT_WATCH_INTERVAL_SECONDS)
+        )
+    except (TypeError, ValueError):
+        message = await update.message.reply_text(
+            "قالب زمان‌بندی درست نیست. نمونه‌ها: /w 30m ، /w 6h ، /w 1d"
+        )
+        _track_message(context, message.message_id)
+        return
     state["watch_mode"] = True
+    state["watch_interval_seconds"] = interval
     _save_state(state)
     context.application.bot_data["watch_mode"] = True
+    context.application.bot_data["watch_interval_seconds"] = interval
+    context.application.bot_data["watch_next_run_at"] = time.time() + interval
     start_message = await context.bot.send_message(
         chat_id=ADMIN_ID,
         text=(
             "▶️ واچ فعال شد.\n"
             "همین حالا ۲۰ پیام آخر تمام کانال‌ها جمع‌آوری می‌شود.\n"
-            "بعد از این، هر ۱۲ ساعت یک اجرای خودکار انجام خواهد شد."
+            f"بعد از این، هر {_format_duration(interval)} یک اجرای خودکار انجام خواهد شد."
         ),
     )
     _track_message(context, start_message.message_id)
@@ -1076,6 +1357,26 @@ async def auto_watch_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def schedule_watch_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.application.bot_data.get("watch_mode"):
+        return
+    now = time.time()
+    next_run = float(context.application.bot_data.get("watch_next_run_at", 0))
+    if now < next_run:
+        return
+    interval = int(
+        context.application.bot_data.get(
+            "watch_interval_seconds", DEFAULT_WATCH_INTERVAL_SECONDS
+        )
+    )
+    context.application.bot_data["watch_next_run_at"] = now + interval
+    await auto_watch_job(context)
+
+
+async def scheduled_state_backup(context: ContextTypes.DEFAULT_TYPE) -> None:
+    await asyncio.to_thread(backup_state)
+
+
 async def _resolve_approval(context: ContextTypes.DEFAULT_TYPE, value: str) -> bool:
     pending = context.application.bot_data.get("pending_approval")
     if not pending:
@@ -1114,19 +1415,25 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         count = max(1, int(text))
     except ValueError:
         return
-    pending_channel = context.user_data.pop("pending_channel", None)
+    pending_channels = context.user_data.pop("pending_channels", [])
     context.user_data["state"] = None
-    if pending_channel:
+    if pending_channels:
         await _enqueue_job(
             context,
-            [pending_channel],
+            pending_channels,
             label="export",
             manual_approval=True,
             count=count,
             max_zip_mb=int(
                 context.application.bot_data.get("max_zip_mb", DEFAULT_MAX_ZIP_MB)
             ),
+            max_media_bytes=DEFAULT_MAX_MEDIA_BYTES,
         )
+    else:
+        message = await update.message.reply_text(
+            "انتخاب کانال منقضی شده است. دوباره /start را بزنید."
+        )
+        _track_message(context, message.message_id)
 
 
 @admin_only
@@ -1134,28 +1441,69 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     query = update.callback_query
     await query.answer()
     data = query.data or ""
-    if data.startswith("nav:"):
-        old_id = query.message.message_id
-        new_id = await _send_channel_card(context, int(data.split(":")[1]), old_id)
-        if new_id:
-            context.application.bot_data["current_card_msg_id"] = new_id
-    elif data.startswith("confirm:"):
-        channels = await get_channels()
-        index = int(data.split(":")[1])
-        if index >= len(channels):
-            return
-        with contextlib.suppress(Exception):
-            await context.bot.delete_message(chat_id=ADMIN_ID, message_id=query.message.message_id)
-        context.user_data["pending_channel"] = channels[index]
-        context.user_data["state"] = "waiting_count"
-        await context.bot.send_message(
+    if data.startswith("cancel:"):
+        job_id = data.split(":", 1)[1]
+        cancelled = await _queue(context.application).cancel_job(job_id)
+        message = await context.bot.send_message(
             chat_id=ADMIN_ID,
             text=(
-                f"کانال «{channels[index]['title']}» انتخاب شد.\n"
+                f"✅ درخواست {job_id} لغو شد."
+                if cancelled
+                else "این درخواست دیگر در صف یا حال پردازش نیست."
+            ),
+        )
+        _track_message(context, message.message_id)
+    elif data.startswith("toggle:"):
+        channels = await get_channels()
+        channel_id = int(data.split(":", 1)[1])
+        if channel_id not in {int(channel["id"]) for channel in channels}:
+            return
+        selected = set(context.user_data.get("selected_channel_ids", set()))
+        if channel_id in selected:
+            selected.remove(channel_id)
+        else:
+            selected.add(channel_id)
+        context.user_data["selected_channel_ids"] = selected
+        new_id = await _send_channel_selector(context, query.message.message_id)
+        if new_id:
+            context.application.bot_data["current_card_msg_id"] = new_id
+    elif data == "select:all":
+        channels = await get_channels()
+        context.user_data["selected_channel_ids"] = {
+            int(channel["id"]) for channel in channels
+        }
+        new_id = await _send_channel_selector(context, query.message.message_id)
+        if new_id:
+            context.application.bot_data["current_card_msg_id"] = new_id
+    elif data == "select:none":
+        context.user_data["selected_channel_ids"] = set()
+        new_id = await _send_channel_selector(context, query.message.message_id)
+        if new_id:
+            context.application.bot_data["current_card_msg_id"] = new_id
+    elif data == "confirm:selected":
+        channels = await get_channels()
+        selected_ids = set(context.user_data.get("selected_channel_ids", set()))
+        selected_channels = [
+            channel for channel in channels if int(channel["id"]) in selected_ids
+        ]
+        if not selected_channels:
+            await query.answer("حداقل یک کانال را انتخاب کنید.", show_alert=True)
+            return
+        with contextlib.suppress(Exception):
+            await context.bot.delete_message(
+                chat_id=ADMIN_ID, message_id=query.message.message_id
+            )
+        context.user_data["pending_channels"] = selected_channels
+        context.user_data["state"] = "waiting_count"
+        prompt = await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=(
+                f"{len(selected_channels)} کانال انتخاب شد.\n"
                 "چند پیام آخر را می‌خواهید دریافت کنید؟\n"
                 "لطفاً فقط یک عدد مثبت بفرستید؛ مثلاً 30."
             ),
         )
+        _track_message(context, prompt.message_id)
 
 
 async def main() -> None:
@@ -1173,12 +1521,25 @@ async def main() -> None:
         .base_file_url(BALE_BASE_FILE_URL)
         .build()
     )
-    app.bot_data["watch_mode"] = _load_state().get("watch_mode", False)
-    app.bot_data["max_zip_mb"] = _load_state().get("max_zip_mb", DEFAULT_MAX_ZIP_MB)
+    state = _load_state()
+    watch_interval = int(
+        state.get("watch_interval_seconds", DEFAULT_WATCH_INTERVAL_SECONDS)
+    )
+    app.bot_data["watch_mode"] = state.get("watch_mode", False)
+    app.bot_data["watch_interval_seconds"] = watch_interval
+    app.bot_data["watch_next_run_at"] = (
+        time.time() + watch_interval if app.bot_data["watch_mode"] else 0
+    )
+    app.bot_data["max_zip_mb"] = state.get("max_zip_mb", DEFAULT_MAX_ZIP_MB)
+    app.bot_data["allowed_users"] = {
+        int(user_id) for user_id in state.get("allowed_users", []) if str(user_id).isdigit()
+    }
     app.bot_data["export_queue"] = ExportQueue(app)
     await _queue(app).start()
 
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("list", cmd_list))
     app.add_handler(CommandHandler("refresh", cmd_refresh))
     app.add_handler(CommandHandler("export", cmd_export))
@@ -1191,10 +1552,16 @@ async def main() -> None:
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    app.job_queue.run_repeating(auto_delete_messages, interval=3600, first=3600)
+    app.job_queue.run_repeating(auto_delete_messages, interval=60, first=60)
     app.job_queue.run_repeating(
-        auto_watch_job, interval=WATCH_INTERVAL_SECONDS, first=WATCH_INTERVAL_SECONDS
+        schedule_watch_job, interval=60, first=60
     )
+    app.job_queue.run_repeating(
+        scheduled_state_backup,
+        interval=STATE_BACKUP_INTERVAL_SECONDS,
+        first=STATE_BACKUP_INTERVAL_SECONDS,
+    )
+    backup_state()
 
     await app.initialize()
     await app.start()
