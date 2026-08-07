@@ -1,1 +1,1 @@
-worker: python main.py
+worker: supervisord -c supervisord.conf -n

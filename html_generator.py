@@ -1,28 +1,30 @@
-"""
-تولید HTML کانال با تم Cyberpunk + Futuristic
-"""
+"""تولید خروجی HTML چندکاناله با تجربه‌ای نزدیک به فید تلگرام."""
+
+from __future__ import annotations
 
 import html
 import os
 from datetime import datetime
 from typing import Optional
 
-
 MIME_MAP = {
-    ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-    ".png": "image/png", ".gif": "image/gif",
-    ".webp": "image/webp", ".bmp": "image/bmp",
-    ".mp4": "video/mp4", ".mov": "video/quicktime",
-    ".webm": "video/webm", ".avi": "video/x-msvideo",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".mp4": "video/mp4",
+    ".mov": "video/quicktime",
+    ".webm": "video/webm",
     ".mkv": "video/x-matroska",
-    ".ogg": "audio/ogg", ".oga": "audio/ogg",
-    ".mp3": "audio/mpeg", ".m4a": "audio/mp4",
-    ".aac": "audio/aac", ".flac": "audio/flac",
+    ".ogg": "audio/ogg",
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
     ".wav": "audio/wav",
     ".pdf": "application/pdf",
     ".zip": "application/zip",
     ".rar": "application/x-rar-compressed",
-    ".7z": "application/x-7z-compressed",
     ".doc": "application/msword",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xls": "application/vnd.ms-excel",
@@ -30,539 +32,167 @@ MIME_MAP = {
     ".ppt": "application/vnd.ms-powerpoint",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     ".txt": "text/plain",
-    ".csv": "text/csv",
-    ".apk": "application/vnd.android.package-archive",
 }
-
-FILE_ICONS = {
-    ".pdf": "⬡",
-    ".doc": "⬡", ".docx": "⬡",
-    ".xls": "⬡", ".xlsx": "⬡",
-    ".ppt": "⬡", ".pptx": "⬡",
-    ".zip": "◈", ".rar": "◈", ".7z": "◈",
-    ".txt": "⬡", ".csv": "⬡",
-    ".apk": "◉",
-    ".mp3": "♪", ".m4a": "♪", ".aac": "♪", ".flac": "♪", ".wav": "♪",
-    ".ogg": "♪", ".oga": "♪",
-    ".mp4": "▶", ".mkv": "▶", ".avi": "▶", ".mov": "▶",
-    ".jpg": "◈", ".jpeg": "◈", ".png": "◈", ".gif": "◈", ".webp": "◈",
-}
-
-AUDIO_EXTS = {".mp3", ".m4a", ".aac", ".flac", ".wav", ".ogg", ".oga"}
-VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".webp"}
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
+VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv", ".avi"}
+AUDIO_EXTS = {".mp3", ".m4a", ".aac", ".flac", ".wav", ".ogg", ".oga"}
+FILE_ICONS = {
+    ".pdf": "PDF",
+    ".doc": "DOC",
+    ".docx": "DOC",
+    ".xls": "XLS",
+    ".xlsx": "XLS",
+    ".ppt": "PPT",
+    ".pptx": "PPT",
+    ".zip": "ZIP",
+    ".rar": "RAR",
+    ".txt": "TXT",
+}
 
 
 def _mime(path: str) -> str:
-    ext = os.path.splitext(path)[1].lower()
-    return MIME_MAP.get(ext, "application/octet-stream")
+    return MIME_MAP.get(os.path.splitext(path)[1].lower(), "application/octet-stream")
 
 
-def _format_date(dt) -> str:
-    if dt is None:
+def _format_date(value: object) -> str:
+    if isinstance(value, datetime):
+        return value.strftime("%H:%M · %d/%m/%Y")
+    return str(value or "")
+
+
+def _format_size(value: int) -> str:
+    if not value:
         return ""
-    if isinstance(dt, datetime):
-        try:
-            return dt.strftime("%H:%M · %d %b %Y")
-        except Exception:
-            return str(dt)
-    return str(dt)
+    if value < 1024 * 1024:
+        return f"{value / 1024:.1f} KB"
+    if value < 1024 * 1024 * 1024:
+        return f"{value / (1024 * 1024):.1f} MB"
+    return f"{value / (1024 * 1024 * 1024):.1f} GB"
 
 
-def _format_size(size_bytes: int) -> str:
-    if size_bytes <= 0:
+def _render_media(message: dict) -> str:
+    path = message.get("media_path")
+    if not path or not os.path.exists(path):
+        if message.get("media_skipped"):
+            return '<div class="skipped">این فایل به‌دلیل حجم زیاد همراه خروجی نیست.</div>'
         return ""
-    if size_bytes < 1024:
-        return f"{size_bytes} B"
-    elif size_bytes < 1024 * 1024:
-        return f"{size_bytes / 1024:.1f} KB"
-    elif size_bytes < 1024 * 1024 * 1024:
-        return f"{size_bytes / (1024 * 1024):.1f} MB"
-    else:
-        return f"{size_bytes / (1024 * 1024 * 1024):.1f} GB"
-
-
-def _get_relative_media_path(media_path: str) -> str:
-    return f"media/{os.path.basename(media_path)}"
-
-
-def _render_media(msg: dict) -> str:
-    media_path = msg.get("media_path")
-    media_type = msg.get("media_type", "")
-    media_name = msg.get("media_name", "")
-    media_size = msg.get("media_size", 0)
-
-    if not media_path or not os.path.exists(media_path):
-        return ""
-
-    ext = os.path.splitext(media_path)[1].lower()
-    rel_path = _get_relative_media_path(media_path)
-    esc_path = html.escape(rel_path)
-
-    if media_type in ("image", "sticker") or (ext in IMAGE_EXTS and media_type != "document"):
-        return f'''
-    <div class="msg-media">
-      <a href="{esc_path}" target="_blank" class="media-link">
-        <img src="{esc_path}" loading="lazy" alt="" class="media-img">
-      </a>
-    </div>'''
-
-    if media_type in ("video", "animation", "video_note") or (ext in VIDEO_EXTS and media_type != "document"):
-        return f'''
-    <div class="msg-media">
-      <video controls preload="metadata" class="media-video">
-        <source src="{esc_path}" type="{_mime(media_path)}">
-        <a href="{esc_path}" class="dl-btn">⬇ دانلود</a>
-      </video>
-    </div>'''
-
-    if media_type in ("audio", "voice") or (ext in AUDIO_EXTS and media_type != "document"):
-        icon = "◉" if media_type == "voice" else "♪"
-        name_esc = html.escape(media_name or "audio")
-        name_html = f'<span class="audio-name">{icon} {name_esc}</span>'
-        return f'''
-    <div class="msg-media audio-wrap">
-      {name_html}
-      <audio controls preload="metadata" class="media-audio">
-        <source src="{esc_path}" type="{_mime(media_path)}">
-      </audio>
-    </div>'''
-
-    # هر نوع فایل دیگر — نمایش به عنوان سند قابل دانلود
-    file_icon = FILE_ICONS.get(ext, "◈")
-    display_name = html.escape(media_name or os.path.basename(media_path))
-    size_str = _format_size(media_size) if media_size else _format_size(os.path.getsize(media_path))
-    ext_label = ext.lstrip(".").upper() if ext else "FILE"
-
-    return f'''
-    <div class="msg-media document-wrap">
-      <a href="{esc_path}" download="{display_name}" class="doc-card">
-        <div class="doc-icon">{file_icon}</div>
-        <div class="doc-info">
-          <div class="doc-name">{display_name}</div>
-          <div class="doc-meta">{size_str} · {ext_label}</div>
-        </div>
-        <div class="doc-dl">⬇</div>
-      </a>
-    </div>'''
-
-
-def _render_message(msg: dict, index: int) -> str:
-    media_html = _render_media(msg)
-    text_raw = msg.get("text", "") or ""
-    text = html.escape(text_raw).replace("\n", "<br>")
-    text_html = f'<div class="msg-text">{text}</div>' if text else ""
-    date_str = _format_date(msg.get("date"))
-    sender = html.escape(msg.get("sender", "") or "")
-    sender_html = f'<div class="msg-sender">{sender}</div>' if sender else ""
-
-    reactions_html = ""
-    reactions = msg.get("reactions", [])
-    if reactions:
-        items = "".join(
-            f'<span class="react-item">{html.escape(str(r["emoji"]))} <span class="react-count">{r["count"]}</span></span>'
-            for r in reactions
+    rel = html.escape(message.get("media_rel_path") or f"media/{os.path.basename(path)}")
+    media_type = message.get("media_type", "")
+    extension = os.path.splitext(path)[1].lower()
+    if media_type == "image" or extension in IMAGE_EXTS:
+        return f'<a class="image-link" href="{rel}" target="_blank"><img class="media-image" src="{rel}" loading="lazy" alt=""></a>'
+    if media_type == "video" or extension in VIDEO_EXTS:
+        poster = message.get("media_poster", "")
+        poster_attr = f' poster="{html.escape(poster)}"' if poster else ""
+        return (
+            f'<video class="media-video" controls preload="metadata"{poster_attr}>'
+            f'<source src="{rel}" type="{_mime(path)}"><a href="{rel}" download>دانلود ویدئو</a></video>'
         )
-        reactions_html = f'<div class="reactions">{items}</div>'
+    if media_type == "audio" or extension in AUDIO_EXTS:
+        name = html.escape(message.get("media_name") or os.path.basename(path))
+        return f'<div class="audio"><div>{name}</div><audio controls preload="metadata" src="{rel}"></audio></div>'
+    name = html.escape(message.get("media_name") or os.path.basename(path))
+    label = FILE_ICONS.get(extension, "FILE")
+    size = _format_size(int(message.get("media_size", 0) or os.path.getsize(path)))
+    return (
+        f'<a class="document" href="{rel}" download="{name}">'
+        f'<span class="file-icon">{label}</span><span class="file-copy"><b>{name}</b><small>{size}</small></span>'
+        f'<span class="download">↓</span></a>'
+    )
 
-    views = msg.get("views", 0)
-    views_html = f'<span class="views">◎ {views:,}</span>' if views else ""
 
-    fwd_html = ""
-    fwd_from = msg.get("fwd_from")
-    if fwd_from:
-        fwd_html = f'<div class="fwd-tag">↪ <b>{html.escape(str(fwd_from))}</b></div>'
+def _render_message(message: dict, index: int) -> str:
+    text = html.escape(message.get("text", "") or "").replace("\n", "<br>")
+    reactions = "".join(
+        f'<span>{html.escape(str(item.get("emoji", "")))} {item.get("count", 0)}</span>'
+        for item in message.get("reactions", [])
+    )
+    reaction_html = f'<div class="reactions">{reactions}</div>' if reactions else ""
+    body = _render_media(message)
+    if text:
+        body += f'<div class="message-text">{text}</div>'
+    if not body:
+        body = '<div class="empty-message">رسانه یا متن قابل نمایش نیست</div>'
+    return (
+        f'<article class="message" id="message-{index}">'
+        f'{body}<footer><span>{_format_date(message.get("date"))}</span>'
+        f'<span>{int(message.get("views", 0) or 0):,} بازدید</span></footer>{reaction_html}</article>'
+    )
 
-    return f"""
-  <div class="message" id="msg-{index}">
-    {fwd_html}
-    {sender_html}
-    {media_html}
-    {text_html}
-    <div class="msg-footer">
-      <span class="msg-date">{date_str}</span>
-      {views_html}
-    </div>
-    {reactions_html}
-  </div>"""
+
+def _render_channel(channel: dict, index: int) -> str:
+    name = html.escape(channel.get("name", ""))
+    username = html.escape(channel.get("username", ""))
+    avatar = channel.get("avatar_rel_path", "")
+    if avatar:
+        avatar_html = f'<img class="avatar" src="{html.escape(avatar)}" alt="">'
+    else:
+        avatar_html = f'<div class="avatar fallback">{html.escape((name or "?")[:1])}</div>'
+    messages = "".join(
+        _render_message(message, index * 100000 + message_index)
+        for message_index, message in enumerate(channel.get("messages", []))
+    )
+    handle = f'<span>@{username}</span>' if username else ""
+    return (
+        f'<section class="channel"><header class="channel-header">{avatar_html}'
+        f'<div><h2>{name}</h2><p>{handle} · {len(channel.get("messages", []))} پیام</p></div></header>'
+        f'<div class="feed">{messages}</div></section>'
+    )
 
 
 def generate_html(
-    channel_name: str,
-    channel_avatar_path: Optional[str],
-    messages: list,
-    msg_count: int,
+    channel_name: Optional[str] = None,
+    channel_avatar_path: Optional[str] = None,
+    messages: Optional[list] = None,
+    msg_count: int = 0,
+    *,
+    channels: Optional[list[dict]] = None,
 ) -> str:
-    if channel_avatar_path and os.path.exists(channel_avatar_path):
-        avatar_html = '<img class="ch-avatar" src="media/avatar.jpg" alt="">'
-    else:
-        initial = html.escape((channel_name or "?")[:1])
-        avatar_html = f'<div class="ch-avatar-placeholder">{initial}</div>'
-
-    msgs_html = "".join(_render_message(m, i) for i, m in enumerate(messages))
-    safe_name = html.escape(channel_name or "")
-
-    return f"""<!DOCTYPE html>
+    if channels is None:
+        channels = [
+            {
+                "name": channel_name or "",
+                "avatar_rel_path": "media/avatar.jpg" if channel_avatar_path else "",
+                "messages": messages or [],
+            }
+        ]
+    title = html.escape(channel_name or (channels[0].get("name", "") if channels else "Archive"))
+    channel_html = "".join(_render_channel(channel, index) for index, channel in enumerate(channels))
+    total_messages = sum(len(channel.get("messages", [])) for channel in channels)
+    return f"""<!doctype html>
 <html lang="fa" dir="rtl">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>{safe_name}</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title}</title>
 <style>
-/* ══ Reset ══ */
-*{{box-sizing:border-box;margin:0;padding:0}}
-
-/* ══ Cyberpunk Variables ══ */
-:root{{
-  --bg:       #020510;
-  --bg2:      #060d1a;
-  --bg3:      #0a1628;
-  --cyan:     #00d4ff;
-  --blue:     #0066cc;
-  --blue2:    #0044aa;
-  --accent:   #0088ee;
-  --glow:     rgba(0,212,255,.18);
-  --glow2:    rgba(0,136,238,.25);
-  --text:     #c8d8e8;
-  --text-dim: #4a6a8a;
-  --border:   rgba(0,212,255,.12);
-  --border2:  rgba(0,212,255,.25);
-  --scan:     rgba(0,212,255,.025);
-}}
-
-/* ══ Base ══ */
-body{{
-  font-family:ui-monospace,"SF Mono","Cascadia Mono","DejaVu Sans Mono",Consolas,monospace;
-  background:var(--bg);
-  color:var(--text);
-  min-height:100vh;
-  direction:rtl;
-  position:relative;
-  overflow-x:hidden;
-}}
-
-/* CRT scanlines overlay */
-body::before{{
-  content:'';
-  position:fixed;
-  inset:0;
-  background:repeating-linear-gradient(
-    0deg,
-    transparent,
-    transparent 2px,
-    var(--scan) 2px,
-    var(--scan) 4px
-  );
-  pointer-events:none;
-  z-index:9998;
-}}
-
-/* Ambient glow corner (static — no animation, so it doesn't jitter on scroll) */
-body::after{{
-  content:'';
-  position:fixed;
-  top:-200px;left:-200px;
-  width:500px;height:500px;
-  background:radial-gradient(circle,rgba(0,100,200,.10) 0%,transparent 70%);
-  pointer-events:none;
-  z-index:0;
-}}
-
-a{{color:var(--cyan);text-decoration:none}}
-
-/* ══ Header ══ */
-.channel-header{{
-  position:sticky;top:0;z-index:100;
-  background:rgba(3,7,16,.97);
-  border-bottom:1px solid var(--cyan);
-  padding:12px 16px;
-  display:flex;align-items:center;gap:14px;
-  box-shadow:0 0 30px rgba(0,212,255,.08),0 2px 0 var(--cyan);
-}}
-
-/* Avatar */
-.ch-avatar{{
-  width:52px;height:52px;border-radius:4px;
-  object-fit:cover;
-  border:1px solid var(--cyan);
-  flex-shrink:0;
-  box-shadow:0 0 12px var(--glow),inset 0 0 6px rgba(0,212,255,.06);
-  image-rendering:crisp-edges;
-  clip-path:polygon(6px 0%,100% 0%,100% calc(100% - 6px),calc(100% - 6px) 100%,0% 100%,0% 6px);
-}}
-.ch-avatar-placeholder{{
-  width:52px;height:52px;
-  border:1px solid var(--cyan);
-  background:linear-gradient(135deg,var(--bg3),var(--blue2));
-  display:flex;align-items:center;justify-content:center;
-  font-size:22px;font-weight:700;color:var(--cyan);
-  flex-shrink:0;
-  box-shadow:0 0 12px var(--glow);
-  clip-path:polygon(6px 0%,100% 0%,100% calc(100% - 6px),calc(100% - 6px) 100%,0% 100%,0% 6px);
-}}
-.ch-info{{flex:1;min-width:0}}
-.ch-name{{
-  font-size:15px;font-weight:700;
-  color:var(--cyan);
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-  letter-spacing:.08em;
-  text-shadow:0 0 10px rgba(0,212,255,.5);
-  text-transform:uppercase;
-}}
-.msg-count-badge{{
-  font-size:10px;
-  color:var(--cyan);
-  background:rgba(0,212,255,.06);
-  border:1px solid var(--border2);
-  padding:4px 10px;
-  clip-path:polygon(4px 0%,100% 0%,calc(100% - 4px) 100%,0% 100%);
-  white-space:nowrap;
-  letter-spacing:.12em;
-  font-weight:700;
-  text-shadow:0 0 8px rgba(0,212,255,.4);
-}}
-
-/* ══ Feed ══ */
-.feed{{
-  max-width:720px;margin:0 auto;
-  padding:14px 10px 90px;
-  display:flex;flex-direction:column;gap:4px;
-  position:relative;z-index:1;
-}}
-
-/* ══ Message ══ */
-.message{{
-  background:linear-gradient(135deg,rgba(10,22,40,.92) 0%,rgba(6,13,26,.95) 100%);
-  border:1px solid var(--border);
-  border-right:2px solid rgba(0,212,255,.2);
-  border-radius:2px;
-  padding:10px 14px 8px;
-  position:relative;
-  transition:border-color .2s,box-shadow .2s;
-  clip-path:polygon(0 0,calc(100% - 8px) 0,100% 8px,100% 100%,8px 100%,0 calc(100% - 8px));
-}}
-.message::before{{
-  content:'';
-  position:absolute;
-  top:0;right:0;
-  width:8px;height:8px;
-  background:var(--cyan);
-  clip-path:polygon(0 0,100% 100%,0 100%);
-  opacity:.15;
-}}
-.message:hover{{
-  border-color:var(--border2);
-  box-shadow:0 0 16px rgba(0,212,255,.08),inset 0 0 20px rgba(0,212,255,.02);
-}}
-
-/* فوروارد */
-.fwd-tag{{
-  font-size:11.5px;color:var(--accent);
-  border-right:2px solid var(--cyan);
-  padding:2px 8px 2px 0;
-  margin-bottom:7px;
-  letter-spacing:.04em;
-  opacity:.85;
-}}
-
-/* فرستنده */
-.msg-sender{{
-  font-size:12px;font-weight:700;
-  color:var(--cyan);margin-bottom:5px;
-  letter-spacing:.06em;
-  text-shadow:0 0 6px rgba(0,212,255,.3);
-}}
-
-/* ══ Media ══ */
-.msg-media{{margin:8px 0 5px}}
-.media-link{{display:block}}
-.media-img{{
-  max-width:100%;max-height:480px;
-  border-radius:2px;display:block;
-  object-fit:contain;
-  background:#030810;
-  cursor:zoom-in;
-  transition:opacity .2s,filter .2s;
-  border:1px solid var(--border);
-}}
-.media-img:hover{{opacity:.88;filter:brightness(1.05)}}
-
-.media-video{{
-  width:100%;max-height:480px;
-  border-radius:2px;
-  background:#000;display:block;
-  border:1px solid var(--border);
-}}
-
-.audio-wrap{{
-  background:rgba(0,100,200,.06);
-  border:1px solid var(--border);
-  border-radius:2px;padding:10px 12px;
-}}
-.audio-name{{
-  display:block;font-size:12px;
-  color:var(--text-dim);margin-bottom:7px;
-  letter-spacing:.04em;
-}}
-.media-audio{{width:100%;accent-color:var(--cyan)}}
-
-/* Сонда */
-.document-wrap{{border-radius:2px;padding:0}}
-.doc-card{{
-  display:flex;align-items:center;gap:12px;
-  padding:10px 14px;
-  border:1px solid var(--border);
-  background:rgba(0,68,170,.06);
-  transition:background .15s,border-color .15s,box-shadow .15s;
-  cursor:pointer;
-  clip-path:polygon(0 0,calc(100% - 6px) 0,100% 6px,100% 100%,6px 100%,0 calc(100% - 6px));
-}}
-.doc-card:hover{{
-  background:rgba(0,136,238,.1);
-  border-color:var(--border2);
-  box-shadow:0 0 12px rgba(0,212,255,.08);
-}}
-.doc-icon{{
-  font-size:22px;flex-shrink:0;width:36px;
-  text-align:center;color:var(--cyan);
-  text-shadow:0 0 8px rgba(0,212,255,.4);
-}}
-.doc-info{{flex:1;min-width:0;overflow:hidden}}
-.doc-name{{
-  font-size:13px;font-weight:700;
-  color:var(--text);
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-  letter-spacing:.02em;
-}}
-.doc-meta{{font-size:11px;color:var(--text-dim);margin-top:2px;letter-spacing:.04em}}
-.doc-dl{{font-size:16px;flex-shrink:0;color:var(--cyan);opacity:.6}}
-.doc-card:hover .doc-dl{{opacity:1;text-shadow:0 0 6px rgba(0,212,255,.5)}}
-
-/* ══ Text ══ */
-.msg-text{{
-  font-size:14px;line-height:1.72;
-  color:var(--text);
-  word-break:break-word;margin-top:3px;
-  font-family:-apple-system,'Segoe UI',Tahoma,sans-serif;
-}}
-
-/* ══ Footer ══ */
-.msg-footer{{
-  display:flex;align-items:center;gap:10px;
-  margin-top:8px;flex-wrap:wrap;
-}}
-.msg-date{{font-size:10.5px;color:var(--text-dim);letter-spacing:.06em}}
-.views{{font-size:10.5px;color:var(--text-dim);letter-spacing:.04em}}
-
-/* ══ Reactions ══ */
-.reactions{{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}}
-.react-item{{
-  background:rgba(0,136,238,.08);
-  border:1px solid var(--border);
-  clip-path:polygon(4px 0%,100% 0%,calc(100% - 4px) 100%,0% 100%);
-  padding:3px 9px;font-size:13px;
-  display:flex;align-items:center;gap:4px;
-  cursor:default;
-  transition:background .15s,border-color .15s;
-}}
-.react-item:hover{{
-  background:rgba(0,136,238,.15);
-  border-color:var(--border2);
-}}
-.react-count{{font-size:11px;color:var(--text-dim);font-weight:700}}
-
-/* ══ Date Divider ══ */
-.date-divider{{
-  display:flex;align-items:center;gap:10px;
-  margin:16px 0 8px;
-}}
-.date-divider::before,.date-divider::after{{
-  content:'';flex:1;
-  height:1px;
-  background:linear-gradient(90deg,transparent,var(--cyan),transparent);
-  opacity:.15;
-}}
-.date-divider span{{
-  font-size:10px;color:var(--text-dim);
-  white-space:nowrap;padding:3px 10px;
-  border:1px solid var(--border);
-  background:rgba(0,212,255,.04);
-  letter-spacing:.08em;
-  text-transform:uppercase;
-}}
-
-/* ══ Scrollbar ══ */
-::-webkit-scrollbar{{width:4px}}
-::-webkit-scrollbar-track{{background:var(--bg)}}
-::-webkit-scrollbar-thumb{{
-  background:var(--blue2);border-radius:0;
-  box-shadow:0 0 6px var(--glow);
-}}
-::-webkit-scrollbar-thumb:hover{{background:var(--accent)}}
-
-/* ══ Responsive ══ */
-@media(max-width:520px){{
-  .ch-name{{font-size:13px}}
-  .msg-text{{font-size:13px}}
-  .channel-header{{padding:10px 12px}}
-  .feed{{padding:8px 6px 80px}}
-  .doc-icon{{font-size:18px;width:28px}}
-}}
-
-@media (prefers-reduced-motion: reduce){{
-  *{{transition:none!important}}
-}}
+:root{{color-scheme:dark;--bg:#0e1621;--panel:#17212b;--panel2:#202b36;--line:#2b3946;--text:#e9f1f7;--muted:#8293a3;--blue:#2aabee;--bubble:#182533}}
+*{{box-sizing:border-box}}html,body{{margin:0;min-height:100%;background:var(--bg);color:var(--text);font-family:Tahoma,"Segoe UI",sans-serif}}
+body{{background:radial-gradient(circle at 50% -10%,#1b3244 0,#0e1621 42rem);padding-bottom:48px}}
+.topbar{{position:sticky;top:0;z-index:3;background:rgba(14,22,33,.94);backdrop-filter:blur(14px);border-bottom:1px solid var(--line);padding:16px clamp(16px,4vw,42px);display:flex;align-items:center;justify-content:space-between}}
+.brand{{display:flex;gap:12px;align-items:center}}.brand-mark{{width:36px;height:36px;border-radius:50%;background:var(--blue);display:grid;place-items:center;font-weight:800;color:white;font-size:19px}}
+.brand h1{{margin:0;font-size:17px}}.brand small{{display:block;color:var(--muted);margin-top:3px;font-size:11px}}.count{{color:var(--muted);font-size:12px}}
+.channel{{max-width:780px;margin:28px auto 0;padding:0 12px}}.channel-header{{display:flex;gap:12px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px 14px;position:sticky;top:69px;z-index:2;box-shadow:0 8px 24px #07101866}}
+.avatar{{width:48px;height:48px;border-radius:50%;object-fit:cover;flex:none}}.avatar.fallback{{display:grid;place-items:center;background:linear-gradient(135deg,#2aabee,#17628b);font-size:22px;font-weight:700}}
+.channel h2{{font-size:16px;margin:0 0 4px}}.channel p{{margin:0;color:var(--muted);font-size:11px}}.channel p span{{color:var(--blue)}}
+.feed{{padding:14px 4px;display:flex;flex-direction:column;gap:8px}}.message{{max-width:650px;background:var(--bubble);border:1px solid #ffffff08;border-radius:12px 12px 3px 12px;padding:10px 12px;box-shadow:0 3px 14px #0000001c}}
+.message:hover{{border-color:#2aabee55}}.message-text{{font-size:14px;line-height:1.85;word-break:break-word;margin-top:8px}}.message footer{{display:flex;gap:12px;color:var(--muted);font-size:10px;margin-top:8px}}.reactions{{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}}.reactions span{{background:#24445a;border:1px solid #2aabee55;border-radius:12px;padding:3px 8px;font-size:11px;color:#b9e8ff}}
+.image-link{{display:block}}.media-image{{display:block;max-width:100%;max-height:520px;border-radius:9px;object-fit:contain;background:#0c1219;cursor:zoom-in}}.media-video{{display:block;width:100%;max-height:520px;border-radius:9px;background:#090d12}}.audio{{background:var(--panel2);border-radius:9px;padding:10px;color:var(--muted);font-size:11px}}.audio audio{{display:block;width:100%;margin-top:7px}}
+.document{{display:flex;align-items:center;gap:10px;background:var(--panel2);border-radius:9px;padding:10px;color:var(--text);text-decoration:none}}.file-icon{{width:42px;height:42px;border-radius:9px;background:#236184;display:grid;place-items:center;font-size:10px;font-weight:700}}.file-copy{{min-width:0;flex:1}}.file-copy b{{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}}.file-copy small{{display:block;color:var(--muted);margin-top:4px}}.download{{color:var(--blue);font-size:24px}}.skipped,.empty-message{{color:var(--muted);font-size:12px;padding:8px;background:#ffffff05;border-radius:8px}}
+@media(max-width:600px){{.channel-header{{top:68px}}.channel{{margin-top:18px}}.message-text{{font-size:13px}}.count{{display:none}}}}
 </style>
 </head>
 <body>
-
-<!-- Header -->
-<div class="channel-header">
-  {avatar_html}
-  <div class="ch-info">
-    <div class="ch-name">{safe_name}</div>
-  </div>
-  <div class="msg-count-badge">MSG // {msg_count}</div>
-</div>
-
-<!-- Feed -->
-<div class="feed">
-{msgs_html}
-</div>
-
+<header class="topbar"><div class="brand"><div class="brand-mark">➤</div><div><h1>آرشیو</h1><small>خروجی پیام‌ها</small></div></div><div class="count">{len(channels)} کانال · {total_messages} پیام</div></header>
+{channel_html}
 <script>
-(function() {{
-  // Lightbox
-  var overlay = null;
-  document.addEventListener('click', function(e) {{
-    var img = e.target.closest('.media-img');
-    if (img) {{
-      e.preventDefault();
-      if (!overlay) {{
-        overlay = document.createElement('div');
-        overlay.style.cssText = [
-          'position:fixed;inset:0;',
-          'background:rgba(0,0,0,.92);',
-          'z-index:9999;',
-          'display:flex;align-items:center;justify-content:center;',
-          'cursor:zoom-out;',
-          'border:1px solid rgba(0,212,255,.15);',
-          'backdrop-filter:blur(8px);'
-        ].join('');
-        overlay.addEventListener('click', function() {{
-          overlay.remove();
-          overlay = null;
-        }});
-      }}
-      overlay.innerHTML = '';
-      var bigImg = document.createElement('img');
-      bigImg.src = img.src;
-      bigImg.style.cssText = 'max-width:96vw;max-height:96vh;object-fit:contain;border:1px solid rgba(0,212,255,.2);box-shadow:0 0 40px rgba(0,212,255,.15);';
-      overlay.appendChild(bigImg);
-      document.body.appendChild(overlay);
-    }}
-  }});
-}})();
+document.addEventListener("click",function(event){{
+  const image=event.target.closest(".media-image"); if(!image)return;
+  event.preventDefault(); const layer=document.createElement("div");
+  layer.style="position:fixed;inset:0;background:#000d;z-index:9;display:grid;place-items:center;padding:20px;cursor:zoom-out";
+  const copy=document.createElement("img"); copy.src=image.src; copy.style="max-width:96vw;max-height:94vh;object-fit:contain";
+  layer.appendChild(copy); layer.onclick=()=>layer.remove(); document.body.appendChild(layer);
+}});
 </script>
 </body>
 </html>"""
