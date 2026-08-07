@@ -12,9 +12,7 @@ import asyncio
 import contextlib
 import json
 import logging
-import math
 import os
-import re
 import shutil
 import tempfile
 import time
@@ -68,7 +66,13 @@ CRYPT_PASS = os.environ["CRYPT_PASS"]
 
 BALE_BASE_URL = "https://tapi.bale.ai/bot"
 BALE_BASE_FILE_URL = "https://tapi.bale.ai/file/bot"
-DATA_DIR = Path(os.environ.get("DATA_DIR", "data"))
+BASE_DIR = Path(__file__).resolve().parent
+_configured_data_dir = Path(os.environ.get("DATA_DIR", "data")).expanduser()
+DATA_DIR = (
+    _configured_data_dir
+    if _configured_data_dir.is_absolute()
+    else BASE_DIR / _configured_data_dir
+)
 STATE_PATH = DATA_DIR / "state.json"
 AVATAR_DIR = DATA_DIR / "avatars"
 
@@ -91,14 +95,16 @@ def _ensure_data_dirs() -> None:
 
 def _load_state() -> dict[str, Any]:
     _ensure_data_dirs()
+    if not STATE_PATH.exists():
+        return {"channels": {}, "watch_mode": False}
     try:
         with STATE_PATH.open("r", encoding="utf-8") as fh:
             value = json.load(fh)
             if isinstance(value, dict):
                 value.setdefault("channels", {})
                 return value
-    except (OSError, ValueError):
-        logger.warning("state file could not be read; starting with an empty cache")
+    except (OSError, ValueError) as exc:
+        logger.warning("state file is invalid; resetting the cache: %s", exc)
     return {"channels": {}, "watch_mode": False}
 
 
@@ -402,6 +408,7 @@ class ExportJob:
     days: Optional[int] = None
     media_filter: str = "all"
     max_zip_mb: int = DEFAULT_MAX_ZIP_MB
+    max_media_bytes: Optional[int] = None
     manual_approval: bool = True
     label: str = "export"
     job_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
@@ -462,7 +469,14 @@ class ExportQueue:
             except Exception:
                 logger.exception("export job %s failed", job.job_id)
                 with contextlib.suppress(Exception):
-                    await job.context.bot.send_message(chat_id=ADMIN_ID, text="✕")
+                    await job.context.bot.send_message(
+                        chat_id=ADMIN_ID,
+                        text=(
+                            f"❌ پردازش {job.label} با خطا متوقف شد.\n"
+                            f"شناسهٔ درخواست: {job.job_id}\n"
+                            "لطفاً دوباره تلاش کنید."
+                        ),
+                    )
             finally:
                 self.active_task = None
                 self.jobs.pop(job.job_id, None)
@@ -544,7 +558,9 @@ async def _fit_bundle(job: ExportJob) -> tuple[Path, Path, list[dict[str, Any]]]
     """Find a suitable count with binary search rather than decrementing one by one."""
     if job.days is not None:
         work_dir = Path(tempfile.mkdtemp(prefix="tgexport_"))
-        zip_path, payload = await _build_bundle(job, None, work_dir)
+        zip_path, payload = await _build_bundle(
+            job, None, work_dir, job.max_media_bytes
+        )
         return zip_path, work_dir, payload
 
     low, high = 1, max(1, job.count)
@@ -558,7 +574,9 @@ async def _fit_bundle(job: ExportJob) -> tuple[Path, Path, list[dict[str, Any]]]
         )
         mid = (low + high) // 2
         work_dir = Path(tempfile.mkdtemp(prefix="tgexport_"))
-        zip_path, payload = await _build_bundle(job, mid, work_dir)
+        zip_path, payload = await _build_bundle(
+            job, mid, work_dir, job.max_media_bytes
+        )
         result = (zip_path, work_dir, payload)
         best_any = result
         size_mb = zip_path.stat().st_size / (1024 * 1024)
@@ -578,7 +596,9 @@ async def _build_fallback_bundle(
     job: ExportJob,
 ) -> tuple[Path, Path, list[dict[str, Any]]]:
     work_dir = Path(tempfile.mkdtemp(prefix="tgexport_"))
-    zip_path, payload = await _build_bundle(job, 1, work_dir)
+    zip_path, payload = await _build_bundle(
+        job, 1, work_dir, job.max_media_bytes
+    )
     return zip_path, work_dir, payload
 
 
@@ -587,6 +607,16 @@ async def _request_approval(job: ExportJob, encrypted: str) -> str:
     approval = {"event": event, "value": None, "job_id": job.job_id}
     job.context.application.bot_data["pending_approval"] = approval
     try:
+        await job.context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=(
+                f"✅ خروجی «{job.label}» آماده شد.\n"
+                "متن رمز‌شده در پیام بعدی است.\n\n"
+                "اگر می‌خواهید همین متن با پیامک هم ارسال شود، "
+                "پاسخ دهید: y\n"
+                "اگر فقط ارسال در بله کافی است، پاسخ دهید: n"
+            ),
+        )
         await job.context.bot.send_message(chat_id=ADMIN_ID, text=encrypted)
         await event.wait()
     finally:
@@ -594,11 +624,40 @@ async def _request_approval(job: ExportJob, encrypted: str) -> str:
             job.context.application.bot_data.pop("pending_approval", None)
     value = approval["value"]
     if value == "y":
+        await job.context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text="✅ تأیید دریافت شد؛ پیامک در حال ارسال است.",
+        )
         try:
-            await asyncio.to_thread(send_sms, encrypted)
+            sms_status, _ = await asyncio.to_thread(send_sms, encrypted)
+            if sms_status == 200:
+                await job.context.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text="✅ پیامک با موفقیت ارسال شد. متن رمز‌شده دوباره در بله ارسال می‌شود.",
+                )
+            else:
+                await job.context.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=(
+                        "⚠️ ارسال پیامک موفق نبود؛ متن رمز‌شده همچنان در بله "
+                        "قابل استفاده است."
+                    ),
+                )
         except Exception as exc:
             logger.warning("SMS failed after approval: %s", exc)
+            await job.context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=(
+                    "⚠️ ارسال پیامک موفق نبود؛ متن رمز‌شده همچنان در بله "
+                    "قابل استفاده است."
+                ),
+            )
         await job.context.bot.send_message(chat_id=ADMIN_ID, text=encrypted)
+    elif value == "n":
+        await job.context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text="✅ پاسخ n ثبت شد؛ پیامک ارسال نمی‌شود.",
+        )
     return value or "n"
 
 
@@ -616,17 +675,37 @@ async def run_export_job(job: ExportJob) -> None:
             cdn_url = await asyncio.to_thread(upload_with_retry, str(upload_copy))
         except Exception:
             await send_zip_parts_to_bale(job.context, zip_path)
-            await _set_progress(job, 100, "ارسال مستقیم انجام شد")
+            await _set_progress(
+                job,
+                100,
+                "✅ آپلود لینک انجام نشد؛ فایل به‌صورت مستقیم ارسال شد.",
+            )
             return
 
         encrypted = encrypt(extract_variable(cdn_url), CRYPT_PASS)
-        await _set_progress(job, 88, "متن آمادهٔ تأیید است")
+        await _set_progress(
+            job,
+            92,
+            "✅ خروجی آماده است؛ در انتظار پاسخ y برای پیامک یا n برای ادامه بدون پیامک.",
+        )
         if job.manual_approval:
-            await _request_approval(job, encrypted)
+            approval_result = await _request_approval(job, encrypted)
+            if approval_result == "y":
+                final_detail = "✅ export کامل شد؛ پیامک و بله انجام شد."
+            else:
+                final_detail = "✅ export کامل شد؛ فقط در بله ارسال شد."
         else:
-            message = await job.context.bot.send_message(chat_id=ADMIN_ID, text=encrypted)
+            await job.context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text="✅ واچ خودکار کامل شد؛ متن رمز‌شده در پیام بعدی ارسال می‌شود.",
+            )
+            message = await job.context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=encrypted,
+            )
             _track_message(job.context, message.message_id)
-        await _set_progress(job, 100, "تمام شد")
+            final_detail = "✅ واچ خودکار کامل شد؛ پیامک ارسال نشد."
+        await _set_progress(job, 100, final_detail)
     finally:
         if work_dir:
             shutil.rmtree(work_dir, ignore_errors=True)
@@ -719,11 +798,20 @@ async def _send_channel_card(
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message:
         _track_message(context, update.message.message_id)
+        intro = await update.message.reply_text(
+            "سلام. یک کانال را انتخاب کنید و دکمهٔ ✓ را بزنید؛ "
+            "بعد تعداد پیام‌های موردنظر را ارسال کنید."
+        )
+        _track_message(context, intro.message_id)
     channels = await get_channels()
     if not channels:
         channels = await refresh_channels()
     if not channels:
-        await update.message.reply_text("—")
+        message = await update.message.reply_text(
+            "هیچ کانالی در فهرست ذخیره‌شده پیدا نشد. "
+            "برای همگام‌سازی دوباره /refresh را بزنید."
+        )
+        _track_message(context, message.message_id)
         return
     message_id = await _send_channel_card(context, 0)
     if message_id:
@@ -736,7 +824,12 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     channels = await get_channels()
     if not channels:
         channels = await refresh_channels()
-    text = "\n".join(channel["title"] for channel in channels) or "—"
+    text = (
+        "کانال‌های ذخیره‌شده:\n\n"
+        + "\n".join(f"• {channel['title']}" for channel in channels)
+        if channels
+        else "فهرست کانال‌ها خالی است. برای دریافت دوباره /refresh را بزنید."
+    )
     message = await update.message.reply_text(text)
     _track_message(context, message.message_id)
 
@@ -744,7 +837,9 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 @admin_only
 async def cmd_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     channels = await refresh_channels()
-    message = await update.message.reply_text(str(len(channels)))
+    message = await update.message.reply_text(
+        f"✅ فهرست کانال‌ها به‌روزرسانی شد.\nتعداد کانال‌ها: {len(channels)}"
+    )
     _track_message(context, message.message_id)
 
 
@@ -806,9 +901,16 @@ async def _enqueue_job(
     days: Optional[int] = None,
     media_filter: str = "all",
     max_zip_mb: int = DEFAULT_MAX_ZIP_MB,
+    max_media_bytes: Optional[int] = None,
 ) -> None:
     if not channels:
-        await context.bot.send_message(chat_id=ADMIN_ID, text="—")
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=(
+                "❌ هیچ کانالی برای export پیدا نشد.\n"
+                "نام کانال را بررسی کنید یا ابتدا /refresh را بزنید."
+            ),
+        )
         return
     job = ExportJob(
         context=context,
@@ -817,15 +919,47 @@ async def _enqueue_job(
         days=days,
         media_filter=media_filter,
         max_zip_mb=max_zip_mb,
+        max_media_bytes=max_media_bytes,
         manual_approval=manual_approval,
         label=label,
     )
-    progress = await context.bot.send_message(chat_id=ADMIN_ID, text="[░░░░░░░░░░░░░░░░░░░░] 0%")
+    channel_names = "، ".join(channel["title"] for channel in channels)
+    options_text = []
+    if days is not None:
+        options_text.append(f"{days} روز اخیر")
+    else:
+        options_text.append(f"{count} پیام از هر کانال")
+    if media_filter == "photos":
+        options_text.append("فقط عکس‌ها")
+    elif media_filter == "text":
+        options_text.append("فقط متن‌ها")
+    request_message = await context.bot.send_message(
+        chat_id=ADMIN_ID,
+        text=(
+            f"📥 درخواست {label} ثبت شد.\n"
+            f"کانال‌ها: {channel_names}\n"
+            f"محدوده: {'، '.join(options_text)}\n"
+            "دانلود رسانه‌ها به‌صورت هم‌زمان انجام می‌شود."
+        ),
+    )
+    _track_message(context, request_message.message_id)
+    progress = await context.bot.send_message(
+        chat_id=ADMIN_ID,
+        text="[░░░░░░░░░░░░░░░░░░░░] 0%\nدر حال آماده‌سازی...",
+    )
     job.progress_message_id = progress.message_id
     _track_message(context, progress.message_id)
     position = await _queue(context.application).enqueue(job)
     if position > 1:
-        await context.bot.send_message(chat_id=ADMIN_ID, text=f"{position}")
+        queue_message = await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=(
+                f"⏳ درخواست در صف قرار گرفت.\n"
+                f"جایگاه در صف: {position}\n"
+                "وقتی نوبت برسد، همین‌جا وضعیت پردازش نمایش داده می‌شود."
+            ),
+        )
+        _track_message(context, queue_message.message_id)
 
 
 @admin_only
@@ -836,7 +970,11 @@ async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     try:
         selected, options = _parse_export_args(context.args, channels)
     except (TypeError, ValueError):
-        await update.message.reply_text("✕")
+        await update.message.reply_text(
+            "❌ قالب دستور درست نیست.\n"
+            "نمونه: /export all --count 30\n"
+            "یا: /export نام‌کانال --days 3 --type photos"
+        )
         return
     await _enqueue_job(
         context,
@@ -878,6 +1016,7 @@ async def _manual_watch(context: ContextTypes.DEFAULT_TYPE) -> None:
         manual_approval=True,
         count=WATCH_MESSAGE_COUNT,
         max_zip_mb=10**9,
+        max_media_bytes=WATCH_MAX_FILE_BYTES,
     )
 
 
@@ -887,6 +1026,15 @@ async def cmd_watch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     state["watch_mode"] = True
     _save_state(state)
     context.application.bot_data["watch_mode"] = True
+    start_message = await context.bot.send_message(
+        chat_id=ADMIN_ID,
+        text=(
+            "▶️ واچ فعال شد.\n"
+            "همین حالا ۲۰ پیام آخر تمام کانال‌ها جمع‌آوری می‌شود.\n"
+            "بعد از این، هر ۱۲ ساعت یک اجرای خودکار انجام خواهد شد."
+        ),
+    )
+    _track_message(context, start_message.message_id)
     await _manual_watch(context)
 
 
@@ -901,7 +1049,14 @@ async def cmd_watch_off(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if pending:
         pending["value"] = "n"
         pending["event"].set()
-    await context.bot.send_message(chat_id=ADMIN_ID, text="✕")
+    message = await context.bot.send_message(
+        chat_id=ADMIN_ID,
+        text=(
+            "⏹ واچ متوقف شد.\n"
+            "همهٔ درخواست‌های منتظر و درخواست در حال پردازش لغو شدند."
+        ),
+    )
+    _track_message(context, message.message_id)
 
 
 async def auto_watch_job(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -917,6 +1072,7 @@ async def auto_watch_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         manual_approval=False,
         count=WATCH_MESSAGE_COUNT,
         max_zip_mb=10**9,
+        max_media_bytes=WATCH_MAX_FILE_BYTES,
     )
 
 
@@ -931,12 +1087,16 @@ async def _resolve_approval(context: ContextTypes.DEFAULT_TYPE, value: str) -> b
 
 @admin_only
 async def cmd_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _resolve_approval(context, "y")
+    if await _resolve_approval(context, "y"):
+        return
+    await update.message.reply_text("در حال حاضر خروجی‌ای برای تأیید وجود ندارد.")
 
 
 @admin_only
 async def cmd_no(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _resolve_approval(context, "n")
+    if await _resolve_approval(context, "n"):
+        return
+    await update.message.reply_text("در حال حاضر خروجی‌ای برای ردکردن وجود ندارد.")
 
 
 @admin_only
@@ -988,7 +1148,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await context.bot.delete_message(chat_id=ADMIN_ID, message_id=query.message.message_id)
         context.user_data["pending_channel"] = channels[index]
         context.user_data["state"] = "waiting_count"
-        await context.bot.send_message(chat_id=ADMIN_ID, text="?")
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=(
+                f"کانال «{channels[index]['title']}» انتخاب شد.\n"
+                "چند پیام آخر را می‌خواهید دریافت کنید؟\n"
+                "لطفاً فقط یک عدد مثبت بفرستید؛ مثلاً 30."
+            ),
+        )
 
 
 async def main() -> None:
