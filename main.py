@@ -871,20 +871,6 @@ async def auto_delete_messages(context: ContextTypes.DEFAULT_TYPE) -> None:
     context.application.bot_data["tracked_msgs"] = keep
 
 
-@admin_only
-async def cmd_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    tracked = context.application.bot_data.setdefault("tracked_msgs", [])
-    for item in tracked:
-        if isinstance(item, int):
-            item = {"message_id": item}
-        message_id = int(item.get("message_id", 0))
-        with contextlib.suppress(Exception):
-            await context.bot.delete_message(chat_id=ADMIN_ID, message_id=message_id)
-    context.application.bot_data["tracked_msgs"] = []
-    with contextlib.suppress(Exception):
-        await context.bot.delete_message(chat_id=ADMIN_ID, message_id=update.message.message_id)
-
-
 def _get_allowed(context: ContextTypes.DEFAULT_TYPE) -> set[int]:
     allowed = context.application.bot_data.setdefault("allowed_users", set())
     if not allowed:
@@ -977,6 +963,20 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if message_id:
         context.application.bot_data["current_card_msg_id"] = message_id
         _track_message(context, message_id)
+
+
+@admin_only
+async def cmd_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    tracked = context.application.bot_data.setdefault("tracked_msgs", [])
+    for item in tracked:
+        if isinstance(item, int):
+            item = {"message_id": item}
+        message_id = int(item.get("message_id", 0))
+        with contextlib.suppress(Exception):
+            await context.bot.delete_message(chat_id=ADMIN_ID, message_id=message_id)
+    context.application.bot_data["tracked_msgs"] = []
+    with contextlib.suppress(Exception):
+        await context.bot.delete_message(chat_id=ADMIN_ID, message_id=update.message.message_id)
 
 
 @admin_only
