@@ -943,7 +943,6 @@ async def _send_channel_selector(
 @admin_only
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message:
-        _track_message(context, update.message.message_id)
         intro = await update.message.reply_text(
             "سلام. یک یا چند کانال را با دکمه‌ها انتخاب کنید؛ "
             "بعد تعداد پیام‌های موردنظر را ارسال کنید."
@@ -968,6 +967,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 @admin_only
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _track_message(context, update.message.message_id)
     channels = await get_channels()
     if not channels:
         channels = await refresh_channels()
@@ -983,6 +983,7 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 @admin_only
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _track_message(context, update.message.message_id)
     message = await update.message.reply_text(
         "راهنمای دستورها\n\n"
         "/start — انتخاب هم‌زمان چند کانال با دکمه\n"
@@ -1003,6 +1004,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 @admin_only
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _track_message(context, update.message.message_id)
     state = _load_state()
     channels = await get_channels()
     queue = _queue(context.application)
@@ -1034,6 +1036,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 @admin_only
 async def cmd_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _track_message(context, update.message.message_id)
     channels = await refresh_channels()
     message = await update.message.reply_text(
         f"✅ فهرست کانال‌ها به‌روزرسانی شد.\nتعداد کانال‌ها: {len(channels)}"
@@ -1207,6 +1210,7 @@ async def _enqueue_job(
 
 @admin_only
 async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _track_message(context, update.message.message_id)
     channels = await get_channels()
     if not channels:
         channels = await refresh_channels()
@@ -1230,6 +1234,7 @@ async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 @admin_only
 async def cmd_add_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _track_message(context, update.message.message_id)
     if not context.args:
         message = await update.message.reply_text("قالب درست: /Add شناسهٔ عددی کاربر")
         _track_message(context, message.message_id)
@@ -1253,6 +1258,7 @@ async def cmd_add_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 @admin_only
 async def cmd_set_limit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _track_message(context, update.message.message_id)
     if not context.args:
         message = await update.message.reply_text("قالب درست: /setlimit 100")
         _track_message(context, message.message_id)
@@ -1290,6 +1296,7 @@ async def _manual_watch(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 @admin_only
 async def cmd_watch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _track_message(context, update.message.message_id)
     state = _load_state()
     try:
         interval = _parse_duration(context.args[0]) if context.args else int(
@@ -1321,6 +1328,7 @@ async def cmd_watch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 @admin_only
 async def cmd_watch_off(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _track_message(context, update.message.message_id)
     state = _load_state()
     state["watch_mode"] = False
     _save_state(state)
@@ -1388,20 +1396,25 @@ async def _resolve_approval(context: ContextTypes.DEFAULT_TYPE, value: str) -> b
 
 @admin_only
 async def cmd_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _track_message(context, update.message.message_id)
     if await _resolve_approval(context, "y"):
         return
-    await update.message.reply_text("در حال حاضر خروجی‌ای برای تأیید وجود ندارد.")
+    message = await update.message.reply_text("در حال حاضر خروجی‌ای برای تأیید وجود ندارد.")
+    _track_message(context, message.message_id)
 
 
 @admin_only
 async def cmd_no(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _track_message(context, update.message.message_id)
     if await _resolve_approval(context, "n"):
         return
-    await update.message.reply_text("در حال حاضر خروجی‌ای برای ردکردن وجود ندارد.")
+    message = await update.message.reply_text("در حال حاضر خروجی‌ای برای ردکردن وجود ندارد.")
+    _track_message(context, message.message_id)
 
 
 @admin_only
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _track_message(context, update.message.message_id)
     text = (update.message.text or "").strip().casefold()
     if text in {"y", "yes", "بله"} and await _resolve_approval(context, "y"):
         return
